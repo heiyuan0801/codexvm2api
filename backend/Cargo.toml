@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/gateway",
+    "apps/slot-sidecar",
     "crates/gateway-admin",
     "crates/gateway-api",
     "crates/gateway-core",
