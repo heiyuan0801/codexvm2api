@@ -73,6 +73,8 @@ pub struct HostConfig {
     pub runtime_data_dir: PathBuf,
     pub logging: LoggingConfig,
     #[serde(default)]
+    pub openai_slots: OpenAiSlotsConfig,
+    #[serde(default)]
     pub system_update: SystemUpdateConfig,
     #[serde(default = "default_drain_timeout_seconds")]
     pub drain_timeout_seconds: u64,
@@ -116,6 +118,7 @@ impl HostConfig {
         }
         resolve_relative_path(source_dir, &mut self.runtime_data_dir);
         self.logging.resolve_and_validate(source_dir)?;
+        self.openai_slots.validate()?;
         self.system_update.resolve_and_validate(
             source_dir,
             &self.runtime_data_dir,
@@ -137,6 +140,84 @@ impl HostConfig {
     #[must_use]
     pub const fn worker_shutdown_timeout(&self) -> Duration {
         Duration::from_secs(self.worker_shutdown_timeout_seconds)
+    }
+}
+
+/// OpenAI 账号独立容器槽位的 Host 配置。
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct OpenAiSlotsConfig {
+    /// 全局开关；关闭时忽略账号级槽位意图。
+    pub enabled: bool,
+    /// sidecar 镜像引用，生产环境建议固定 digest。
+    pub image: String,
+    /// Docker Engine endpoint，仅支持 Host 可访问的 unix/npipe endpoint。
+    pub docker_endpoint: String,
+    pub reconcile_interval_seconds: u64,
+    pub start_timeout_seconds: u64,
+    pub memory_limit_mb: u64,
+    pub cpu_limit_millis: u64,
+    pub pids_limit: u64,
+}
+
+impl Default for OpenAiSlotsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            image: "ghcr.io/zyycn/codex-proxy-rs-slot-sidecar:latest".to_owned(),
+            docker_endpoint: "unix:///var/run/docker.sock".to_owned(),
+            reconcile_interval_seconds: 10,
+            start_timeout_seconds: 30,
+            memory_limit_mb: 512,
+            cpu_limit_millis: 1_000,
+            pids_limit: 128,
+        }
+    }
+}
+
+impl OpenAiSlotsConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.image.trim().is_empty() {
+            return Err(ConfigError::InvalidField("host.openai_slots.image"));
+        }
+        if !self.docker_endpoint.starts_with("unix://")
+            && !self.docker_endpoint.starts_with("npipe://")
+        {
+            return Err(ConfigError::InvalidField(
+                "host.openai_slots.docker_endpoint",
+            ));
+        }
+        for (value, field) in [
+            (
+                self.reconcile_interval_seconds,
+                "host.openai_slots.reconcile_interval_seconds",
+            ),
+            (
+                self.start_timeout_seconds,
+                "host.openai_slots.start_timeout_seconds",
+            ),
+            (self.memory_limit_mb, "host.openai_slots.memory_limit_mb"),
+            (self.cpu_limit_millis, "host.openai_slots.cpu_limit_millis"),
+            (self.pids_limit, "host.openai_slots.pids_limit"),
+        ] {
+            if value == 0 {
+                return Err(ConfigError::InvalidField(field));
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn reconcile_interval(&self) -> Duration {
+        Duration::from_secs(self.reconcile_interval_seconds)
+    }
+
+    #[must_use]
+    pub const fn start_timeout(&self) -> Duration {
+        Duration::from_secs(self.start_timeout_seconds)
     }
 }
 

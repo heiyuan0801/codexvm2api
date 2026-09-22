@@ -4,7 +4,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use gateway_host::config::{FileLoggingConfig, HostConfig, ListenConfig, LoggingConfig};
+use gateway_host::config::{
+    FileLoggingConfig, HostConfig, ListenConfig, LoggingConfig, OpenAiSlotsConfig,
+};
 use gateway_host::system_update::SystemUpdateConfig;
 
 mod sink;
@@ -46,6 +48,7 @@ fn logging_requires_at_least_one_sink() {
             request_dump: false,
             request_dump_retention_days: 1,
         },
+        openai_slots: OpenAiSlotsConfig::default(),
         system_update: SystemUpdateConfig::default(),
         drain_timeout_seconds: 30,
         worker_shutdown_timeout_seconds: 30,
@@ -278,6 +281,7 @@ fn logging_config(directory: PathBuf, request_dump: bool) -> HostConfig {
             request_dump,
             request_dump_retention_days: 1,
         },
+        openai_slots: OpenAiSlotsConfig::default(),
         system_update: SystemUpdateConfig::default(),
         drain_timeout_seconds: 30,
         worker_shutdown_timeout_seconds: 30,

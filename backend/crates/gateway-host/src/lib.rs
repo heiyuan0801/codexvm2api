@@ -6,6 +6,7 @@ mod logging;
 pub mod pricing;
 pub mod proxy_probe;
 pub mod serve;
+pub mod slots;
 pub mod system_update;
 pub mod workers;
 

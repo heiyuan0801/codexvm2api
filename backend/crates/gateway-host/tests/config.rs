@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use gateway_host::config::{FileLoggingConfig, HostConfig, ListenConfig, LoggingConfig};
+use gateway_host::config::{
+    FileLoggingConfig, HostConfig, ListenConfig, LoggingConfig, OpenAiSlotsConfig,
+};
 use gateway_host::system_update::SystemUpdateConfig;
 
 #[test]
@@ -140,6 +142,42 @@ fn host_config_rejects_zero_drain_window() {
 }
 
 #[test]
+fn openai_slots_are_disabled_with_bounded_defaults() {
+    let config = OpenAiSlotsConfig::default();
+
+    assert!(!config.enabled);
+    assert_eq!(config.reconcile_interval_seconds, 10);
+    assert_eq!(config.start_timeout_seconds, 30);
+    assert_eq!(config.memory_limit_mb, 512);
+    assert_eq!(config.pids_limit, 128);
+}
+
+#[test]
+fn enabled_openai_slots_require_a_docker_endpoint_and_resource_limits() {
+    for invalid in ["image", "docker_endpoint", "reconcile", "memory", "pids"] {
+        let mut config = valid_config();
+        config.openai_slots.enabled = true;
+        match invalid {
+            "image" => config.openai_slots.image.clear(),
+            "docker_endpoint" => config.openai_slots.docker_endpoint = "tcp://docker:2375".into(),
+            "reconcile" => config.openai_slots.reconcile_interval_seconds = 0,
+            "memory" => config.openai_slots.memory_limit_mb = 0,
+            "pids" => config.openai_slots.pids_limit = 0,
+            _ => unreachable!(),
+        }
+        assert!(
+            config
+                .resolve_and_validate(
+                    std::path::Path::new("/srv/gateway"),
+                    std::path::Path::new("/srv/gateway/web/dist"),
+                )
+                .is_err(),
+            "{invalid} must be rejected"
+        );
+    }
+}
+
+#[test]
 fn logging_rejects_zero_retention_windows() {
     for request_dump in [false, true] {
         let mut config = valid_config();
@@ -219,6 +257,7 @@ fn valid_config() -> HostConfig {
             request_dump: false,
             request_dump_retention_days: 1,
         },
+        openai_slots: OpenAiSlotsConfig::default(),
         system_update,
         drain_timeout_seconds: 30,
         worker_shutdown_timeout_seconds: 30,

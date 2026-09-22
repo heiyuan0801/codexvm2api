@@ -31,6 +31,16 @@ host:
       max_file_size_mb: 20
   drain_timeout_seconds: 30
   worker_shutdown_timeout_seconds: 30
+  # 每个启用账号对应一个常驻 sidecar 容器和专属代理出口
+  openai_slots:
+    enabled: false
+    image: 'ghcr.io/zyycn/codex-proxy-rs-slot-sidecar:latest'
+    docker_endpoint: 'unix:///var/run/docker.sock'
+    reconcile_interval_seconds: 10
+    start_timeout_seconds: 30
+    memory_limit_mb: 512
+    cpu_limit_millis: 1000
+    pids_limit: 128
 
 store:
   database:
