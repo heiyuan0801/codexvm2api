@@ -30,12 +30,13 @@ use gateway_admin::{
     ports::store::{AccountStore, AdminStoreError, AdminStoreErrorKind, AdminStoreResult},
 };
 use gateway_core::account::{
-    AccountConcurrencyLimit, AccountErrorReason, AccountStateChange, AccountWeight,
-    CredentialCasOutcome, CredentialCasUpdate, CredentialCasUpdateParts,
-    CredentialRevision as CoreCredentialRevision, CredentialState, LoadedCredential,
-    NewProviderAccount as CoreNewProviderAccount, OpaqueProviderData, PlaintextCredential,
-    ProviderAccount as CoreProviderAccount, ProviderAccountId as CoreProviderAccountId,
-    ProviderAccountIdentity, ProviderAccountStore,
+    AccountConcurrencyLimit, AccountErrorReason, AccountSlotGeneration, AccountSlotIdentity,
+    AccountSlotInstanceId, AccountStateChange, AccountWeight, CredentialCasOutcome,
+    CredentialCasUpdate, CredentialCasUpdateParts, CredentialRevision as CoreCredentialRevision,
+    CredentialState, LoadedCredential, NewProviderAccount as CoreNewProviderAccount,
+    OpaqueProviderData, PlaintextCredential, ProviderAccount as CoreProviderAccount,
+    ProviderAccountId as CoreProviderAccountId, ProviderAccountIdentity, ProviderAccountSlot,
+    ProviderAccountSlotStore, ProviderAccountStore,
     ProviderAccountUpdate as CoreProviderAccountUpdate,
     ProviderRefreshQuery as CoreProviderRefreshQuery, QuotaAccessChange, QuotaAccessState,
     QuotaEvidence, QuotaObservation, QuotaObservationTouch, QuotaState, QuotaWriteOutcome,
@@ -65,6 +66,7 @@ mod quota_forecast;
 mod repository;
 mod rows;
 mod runtime;
+mod slots;
 
 pub use admin_adapter::*;
 pub(crate) use admin_queries::*;

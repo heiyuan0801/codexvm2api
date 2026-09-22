@@ -27,9 +27,9 @@ use gateway_admin::{
 use gateway_core::account::{
     AccountErrorReason, AccountStateChange, CredentialCasOutcome, CredentialCasUpdate,
     CredentialRevision, CredentialState, OpaqueProviderData, PlaintextCredential,
-    ProviderAccountId, ProviderAccountIdentity, ProviderAccountStore, ProviderAccountUpdate,
-    ProviderRefreshQuery, QuotaAccessChange, QuotaAccessState, QuotaEvidence, QuotaObservation,
-    QuotaObservationTouch, QuotaState, QuotaWriteOutcome,
+    ProviderAccountId, ProviderAccountIdentity, ProviderAccountSlotStore, ProviderAccountStore,
+    ProviderAccountUpdate, ProviderRefreshQuery, QuotaAccessChange, QuotaAccessState,
+    QuotaEvidence, QuotaObservation, QuotaObservationTouch, QuotaState, QuotaWriteOutcome,
 };
 use gateway_core::routing::{AccountGroupId, ProviderKind};
 use gateway_store::{
@@ -82,11 +82,75 @@ fn postgres_provider_account_adapter_implements_core_port() {
     fn assert_port<T: ProviderAccountStore>() {}
     assert_port::<PgProviderAccountRepository>();
 
+    fn assert_slot_port<T: ProviderAccountSlotStore>() {}
+    assert_slot_port::<PgProviderAccountRepository>();
+
     fn assert_admin_port<T: ProviderAccountAdminRepository>() {}
     assert_admin_port::<PgProviderAccountRepository>();
 
     fn assert_terminal_admin_port<T: AccountStore>() {}
     assert_terminal_admin_port::<PgAdminAccountStore>();
+}
+
+#[tokio::test]
+async fn account_slots_round_trip_and_delete_with_their_account() {
+    let Some(database) = TestDatabase::create("openai_account_slots").await else {
+        return;
+    };
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    repository
+        .insert_provider_account(account("acct_slot_round_trip", "user-slot"))
+        .await
+        .expect("insert slot account");
+    let instance_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "insert into openai_account_slots
+           (account_id, enabled, instance_id, identity_json, desired_generation)
+         values ($1, true, $2::uuid, $3, 2)",
+    )
+    .bind("acct_slot_round_trip")
+    .bind(instance_id.to_string())
+    .bind(json!({
+        "hostname": "cpr-slot-round-trip",
+        "machine_id": "1fc17f765c107a4896c4f29d3d70c327",
+        "installation_id": "0199f4c8-52a8-7aa0-a6d7-f75219e82e3d",
+        "timezone": "Asia/Shanghai"
+    }))
+    .execute(&database.pool)
+    .await
+    .expect("insert slot intent");
+
+    let stored = repository
+        .get_account_slot(&ProviderAccountId::new("acct_slot_round_trip").expect("account"))
+        .await
+        .expect("load slot")
+        .expect("slot exists");
+    assert!(stored.enabled());
+    assert_eq!(stored.instance_id().uuid(), instance_id);
+    assert_eq!(stored.identity().hostname(), "cpr-slot-round-trip");
+    assert_eq!(stored.generation().get(), 2);
+    assert_eq!(
+        repository
+            .list_account_slots()
+            .await
+            .expect("list slots")
+            .len(),
+        1
+    );
+
+    repository
+        .delete_provider_account("acct_slot_round_trip")
+        .await
+        .expect("delete account");
+    assert!(
+        repository
+            .get_account_slot(&ProviderAccountId::new("acct_slot_round_trip").expect("account"))
+            .await
+            .expect("load deleted slot")
+            .is_none()
+    );
+
+    database.close().await;
 }
 
 #[tokio::test]

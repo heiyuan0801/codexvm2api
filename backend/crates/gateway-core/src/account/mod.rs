@@ -13,10 +13,12 @@ mod proxy;
 pub use proxy::{InvalidOutboundProxy, OutboundProxy};
 pub mod scope;
 mod selection;
+mod slot;
 mod store;
 
 pub use error::CredentialError;
 pub use model::*;
 pub use selection::*;
 pub(crate) use selection::{SMART_SCORE_TOLERANCE, smart_score};
+pub use slot::*;
 pub use store::ProviderAccountStore;
