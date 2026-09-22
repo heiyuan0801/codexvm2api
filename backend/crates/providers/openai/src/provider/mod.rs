@@ -244,12 +244,23 @@ impl CodexProvider {
             .map_err(|_| {
                 provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent)
             })?;
-        if desired.is_none_or(|slot| !slot.enabled()) {
+        let Some(desired) = desired else {
             return Ok(None);
+        };
+        // 绑定关系在停机时仍然存在，禁止退回账号直连。
+        if !desired.enabled() {
+            return Err(provider_error(
+                ProviderErrorKind::Unavailable,
+                UpstreamSendState::NotSent,
+            ));
         }
-        slots.runtime.route(account_id).map(Some).ok_or_else(|| {
-            provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent)
-        })
+        slots
+            .runtime
+            .route_for_slot(&desired)
+            .map(Some)
+            .ok_or_else(|| {
+                provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent)
+            })
     }
 
     pub(crate) fn with_session_identity(mut self, identity: CodexSessionIdentity) -> Self {

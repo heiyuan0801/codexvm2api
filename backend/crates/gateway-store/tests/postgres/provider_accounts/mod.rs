@@ -5,6 +5,7 @@ use std::{
 };
 
 mod quota_forecast;
+mod slots;
 
 use chrono::{TimeDelta, Utc};
 use gateway_admin::{
@@ -93,7 +94,7 @@ fn postgres_provider_account_adapter_implements_core_port() {
 }
 
 #[tokio::test]
-async fn account_slots_round_trip_and_delete_with_their_account() {
+async fn account_slots_preserve_identity_and_become_empty_when_account_is_deleted() {
     let Some(database) = TestDatabase::create("openai_account_slots").await else {
         return;
     };
@@ -138,10 +139,19 @@ async fn account_slots_round_trip_and_delete_with_their_account() {
         1
     );
 
-    repository
-        .delete_provider_account("acct_slot_round_trip")
+    // 管理端允许原子删除启用账号，底层单条删除仅接受已停用账号
+    admin_account_store(&database.pool)
+        .delete_accounts(
+            DeleteAccounts {
+                account_ids: vec!["acct_slot_round_trip".to_owned()],
+            },
+            &MutationContext {
+                actor: MutationActor::System,
+                request_id: "slot-delete-test".to_owned(),
+            },
+        )
         .await
-        .expect("delete account");
+        .expect("delete account through admin transaction");
     assert!(
         repository
             .get_account_slot(&ProviderAccountId::new("acct_slot_round_trip").expect("account"))
@@ -150,6 +160,15 @@ async fn account_slots_round_trip_and_delete_with_their_account() {
             .is_none()
     );
 
+    let (bound, running): (Option<String>, bool) = sqlx::query_as(
+        "select account_id, enabled from openai_account_slots where instance_id = $1::uuid",
+    )
+    .bind(instance_id.to_string())
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(bound.is_none());
+    assert!(!running);
     database.close().await;
 }
 

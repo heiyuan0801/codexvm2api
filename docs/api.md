@@ -1438,3 +1438,31 @@ Key 已删除或未关联时为 `null`，不影响记录返回，不包含密钥
 Host 关闭或任务取消会记录失败终态；状态查询会收敛无执行锁的遗留 `running`。
 异常退出留下的锁仍遵循 30 分钟过期规则，未过期前不会抢占其他进程的操作。
 实例升级和仓库发版见 [部署文档](../deploy/README.md#镜像升级与源码构建)。
+
+## 独立容器槽位
+
+以下接口要求管理员身份，沿用管理端会话、来源校验和 `no-store` 约定。
+
+- `GET /api/admin/containers`：返回 `{ "globalEnabled": false, "items": [...] }`。
+- `POST /api/admin/containers/update`：提交下表操作，返回 `{ "saved": true }`。成功表示意图已提交，真实运行状态由后续查询确认。
+
+| action | 字段 | 条件与效果 |
+| --- | --- | --- |
+| `create` | `name` | 创建未绑定账号的空槽，不立即创建 Docker 容器 |
+| `configureProxy` | `id`、`expectedGeneration`、`proxyId`（可为 null） | 停机意图下选择代理库中的出口 |
+| `bind` | `id`、`expectedGeneration`、`accountId`（可为 null） | 停机意图下绑定或解绑；绑定前必须配置代理，账号必须为 OpenAI OAuth，且不能重复绑定 |
+| `start` | `id`、`expectedGeneration` | 全局功能开启、代理存在且绑定账号已启用时请求启动 |
+| `stop` | `id`、`expectedGeneration` | 请求停止，保留绑定、身份和 HOME |
+| `delete` | `id`、`expectedGeneration` | 停止意图且未绑定账号时提交删除；后台清理 owned 容器、独立网络和 HOME 卷，全部成功后删除配置 |
+
+列表项含 `id`、`name`、`accountId`、`accountName`、`accountEnabled`、`proxyId`、`proxyName`、`running`、`generation`、`state` 和 `reason`；不返回代理凭据、设备身份、内部地址或 bearer token。`running` 为期望运行状态，不能代替实际 `state`。
+
+状态包括 `not-created`、`stopped`、`stopping`、`starting`、`ready`、`degraded`、`global-disabled`、`unknown`、`deleting` 和 `delete-failed`。启动成功需等待 `ready`；Docker 不可用或全局关闭时不能把停止意图当作已完成停机。
+
+配置更新使用 generation 乐观锁，旧代次返回 `409`。代理库连接地址变更同步推进关联槽位代次。删除账号会停止并解绑槽位，保留槽位身份；被槽位引用的代理不可删除。
+
+删除意图持久化后禁止再次绑定或启动。清理失败保留配置并自动重试；全局功能关闭时清理等待恢复开启。账号与代理库记录保留。Docker 资源必须通过 owner/instance 标签验证，网络上的外部容器和占用中的卷会阻止清理。
+
+账号列表仍可使用 `POST /api/admin/accounts/slots/query`，每批 1 至 200 个账号。旧 `/api/admin/accounts/slots/update` 不再创建或启停槽位，调用方应迁移到容器管理接口。
+
+只要绑定关系存在，账号在停止、全局关闭或非 Ready 状态下均不可退回普通推理路径。仅未绑定槽位的账号沿用原路径。

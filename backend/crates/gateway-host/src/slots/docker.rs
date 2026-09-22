@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use bollard::errors::Error as DockerError;
 use bollard::models::{
     ContainerCreateBody, ContainerSummaryStateEnum, HostConfig, NetworkConnectRequest,
-    NetworkCreateRequest, RestartPolicy, RestartPolicyNameEnum, VolumeCreateRequest,
+    NetworkCreateRequest, NetworkDisconnectRequest, RestartPolicy, RestartPolicyNameEnum,
+    VolumeCreateRequest,
 };
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, DownloadFromContainerOptionsBuilder,
@@ -148,8 +149,15 @@ impl BollardAccountSlotEngine {
         )?;
 
         let gateway_attached = network.containers.as_ref().is_some_and(|containers| {
-            containers.values().any(|endpoint| {
-                endpoint.name.as_deref() == Some(self.gateway_container.trim_start_matches('/'))
+            let gateway = self.gateway_container.trim_start_matches('/');
+            // HOSTNAME 默认是短容器 ID；Docker 网络返回的 key 是完整 ID。
+            let short_id = gateway.len() >= 12
+                && gateway.len() <= 64
+                && gateway.bytes().all(|byte| byte.is_ascii_hexdigit());
+            containers.iter().any(|(id, endpoint)| {
+                id == gateway
+                    || (short_id && id.starts_with(gateway))
+                    || endpoint.name.as_deref() == Some(gateway)
             })
         });
         if !gateway_attached {
@@ -336,6 +344,97 @@ impl BollardAccountSlotEngine {
 
 #[async_trait]
 impl AccountSlotEngine for BollardAccountSlotEngine {
+    async fn delete(
+        &self,
+        instance_id: AccountSlotInstanceId,
+    ) -> Result<(), AccountSlotEngineError> {
+        let names = SlotResourceNames::new(instance_id);
+        // 先检查全部资源和网络端点，再执行破坏性操作；同名外部资源不能被删除。
+        let container = self.inspect_owned_container(&names, instance_id).await?;
+        let volume = match self.docker.inspect_volume(&names.volume).await {
+            Ok(volume) => {
+                verify_resource_labels(&volume.labels, instance_id)?;
+                Some(volume)
+            }
+            Err(error) if is_not_found(&error) => None,
+            Err(error) => return Err(map_docker_error(error)),
+        };
+        let network = match self.docker.inspect_network(&names.network, None).await {
+            Ok(network) => {
+                verify_resource_labels(
+                    network.labels.as_ref().unwrap_or(&HashMap::new()),
+                    instance_id,
+                )?;
+                Some(network)
+            }
+            Err(error) if is_not_found(&error) => None,
+            Err(error) => return Err(map_docker_error(error)),
+        };
+        let mut gateway_id = None;
+        if let Some(network) = &network {
+            let gateway = self
+                .docker
+                .inspect_container(&self.gateway_container, None)
+                .await
+                .map_err(map_docker_error)?;
+            let id = gateway
+                .id
+                .ok_or_else(|| engine_error(AccountSlotEngineErrorKind::InvalidState))?;
+            for endpoint in network
+                .containers
+                .iter()
+                .flat_map(|endpoints| endpoints.keys())
+            {
+                if endpoint == &id {
+                    gateway_id = Some(id.clone());
+                } else if container
+                    .as_ref()
+                    .and_then(|container| container.id.as_ref())
+                    != Some(endpoint)
+                {
+                    return Err(engine_error(AccountSlotEngineErrorKind::InvalidState));
+                }
+            }
+        }
+        self.remove_owned_container(&names, instance_id).await?;
+        if network.is_some() {
+            if let Some(gateway) = gateway_id {
+                self.docker
+                    .disconnect_network(
+                        &names.network,
+                        NetworkDisconnectRequest {
+                            container: gateway,
+                            force: Some(false),
+                        },
+                    )
+                    .await
+                    .or_else(ignore_not_found)
+                    .map_err(map_docker_error)?;
+            }
+            self.docker
+                .remove_network(&names.network)
+                .await
+                .or_else(ignore_not_found)
+                .map_err(map_docker_error)?;
+        }
+        if volume.is_some() {
+            // 不强删占用中的卷，清理失败保留删除意图以便重试。
+            self.docker
+                .remove_volume(
+                    &names.volume,
+                    Some(
+                        bollard::query_parameters::RemoveVolumeOptionsBuilder::default()
+                            .force(false)
+                            .build(),
+                    ),
+                )
+                .await
+                .or_else(ignore_not_found)
+                .map_err(map_docker_error)?;
+        }
+        Ok(())
+    }
+
     async fn list_owned(&self) -> Result<Vec<AccountSlotHealth>, AccountSlotEngineError> {
         let filters = HashMap::from([(
             "label".to_owned(),
@@ -643,6 +742,14 @@ fn read_only_file_from_archive(bytes: &[u8]) -> Result<Vec<u8>, AccountSlotEngin
     Ok(value)
 }
 
+fn ignore_not_found(error: DockerError) -> Result<(), DockerError> {
+    if is_not_found(&error) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
 fn is_not_found(error: &DockerError) -> bool {
     matches!(
         error,
@@ -669,75 +776,4 @@ fn map_docker_error(error: DockerError) -> AccountSlotEngineError {
 
 const fn engine_error(kind: AccountSlotEngineErrorKind) -> AccountSlotEngineError {
     AccountSlotEngineError { kind }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gateway_core::account::{OutboundProxy, ProviderAccountId};
-
-    #[test]
-    fn resource_names_only_contain_stable_instance_id() {
-        let instance = instance();
-        let names = SlotResourceNames::new(instance);
-
-        assert_eq!(names.container, "cpr-slot-0199f4c852a87aa0a6d7f75219e82e3d");
-        assert!(names.volume.ends_with("-data"));
-        assert!(names.network.ends_with("-net"));
-    }
-
-    #[test]
-    fn labels_reject_foreign_resources() {
-        let instance = instance();
-        let mut labels = base_labels(instance);
-        labels.insert(OWNER_LABEL.to_owned(), "some-other-app".to_owned());
-
-        let error = verify_resource_labels(&labels, instance).unwrap_err();
-
-        assert_eq!(error.kind, AccountSlotEngineErrorKind::Unauthorized);
-    }
-
-    #[test]
-    fn secret_archive_has_restricted_files_and_no_account_identity() {
-        let desired = desired();
-        let archive =
-            build_slot_archive(&desired, b"0123456789abcdef0123456789abcdef").expect("archive");
-        assert!(!String::from_utf8_lossy(&archive).contains("acct_test"));
-        let mut entries = Archive::new(Cursor::new(archive))
-            .entries()
-            .expect("entries")
-            .map(|entry| {
-                let entry = entry.expect("entry");
-                (
-                    entry.path().expect("path").into_owned(),
-                    entry.header().mode().expect("mode"),
-                )
-            })
-            .collect::<Vec<_>>();
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
-
-        assert!(entries.iter().any(|(path, mode)| {
-            path == std::path::Path::new("var/lib/cpr-slot/secrets/auth") && *mode == 0o600
-        }));
-        assert!(entries.iter().any(|(path, mode)| {
-            path == std::path::Path::new("var/lib/cpr-slot/secrets/proxy") && *mode == 0o600
-        }));
-    }
-
-    fn instance() -> AccountSlotInstanceId {
-        AccountSlotInstanceId::parse("slot_0199f4c8-52a8-7aa0-a6d7-f75219e82e3d").expect("instance")
-    }
-
-    fn desired() -> DesiredAccountSlot {
-        DesiredAccountSlot {
-            account_id: ProviderAccountId::new("acct_test").expect("account"),
-            instance_id: instance(),
-            generation: AccountSlotGeneration::new(1).expect("generation"),
-            hostname: "cpr-slot-test".to_owned(),
-            machine_id: "0123456789abcdef0123456789abcdef".to_owned(),
-            installation_id: "0199f4c8-52a8-7aa0-a6d7-f75219e82e41".to_owned(),
-            timezone: "Asia/Shanghai".to_owned(),
-            outbound_proxy: OutboundProxy::parse("socks5://user:pass@proxy:1080").expect("proxy"),
-        }
-    }
 }

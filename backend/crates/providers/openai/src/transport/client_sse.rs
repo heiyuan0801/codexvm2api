@@ -130,7 +130,6 @@ impl CodexBackendClient {
             super::slot::send_slot_request(
                 &self.direct_client,
                 route,
-                CODEX_RESPONSES_PATH,
                 &headers,
                 &serde_json::Value::Object(upstream_body),
             )
@@ -150,6 +149,12 @@ impl CodexBackendClient {
         let upstream_headers_ms = elapsed_duration_millis(headers_started_at.elapsed());
         let http_version = http_version_name(response.version()).to_string();
         let status = response.status();
+        if self.slot_route.is_some() && response.headers().contains_key("x-cpr-slot-error") {
+            // sidecar 校验失败尚未访问上游；代理错误可能已发送，保守保留不确定边界。
+            return Err(CodexClientError::SlotUnavailable {
+                not_sent: matches!(status.as_u16(), 400 | 401),
+            });
+        }
         trace.headers(
             "upstream.response.headers",
             serde_json::json!({

@@ -13,6 +13,8 @@ use crate::system_update::SystemUpdateConfig;
 const CONFIG_RELATIVE_PATH: &str = "deploy/config.yaml";
 const SERVER_HOST_ENV: &str = "CPR_SERVER_HOST";
 const SERVER_PORT_ENV: &str = "CPR_SERVER_PORT";
+const SLOTS_ENABLED_ENV: &str = "CPR_OPENAI_SLOTS_ENABLED";
+const SLOTS_IMAGE_ENV: &str = "CPR_OPENAI_SLOTS_IMAGE";
 
 /// 由组装根实现的顶层配置契约。
 ///
@@ -89,6 +91,14 @@ impl HostConfig {
         source_dir: &Path,
         asset_directory: &Path,
     ) -> Result<(), ConfigError> {
+        if let Some(enabled) = optional_environment_value(SLOTS_ENABLED_ENV)? {
+            self.openai_slots.enabled = enabled
+                .parse()
+                .map_err(|_| ConfigError::InvalidEnvironment(SLOTS_ENABLED_ENV))?;
+        }
+        if let Some(image) = optional_environment_value(SLOTS_IMAGE_ENV)? {
+            self.openai_slots.image = image;
+        }
         if let Some(host) = optional_environment_value(SERVER_HOST_ENV)? {
             self.listen.host = host;
         }
@@ -147,12 +157,14 @@ impl HostConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct OpenAiSlotsConfig {
-    /// 全局开关；关闭时忽略账号级槽位意图。
+    /// 全局开关；关闭时不连接 Docker，已启用槽位的账号保持不可调度。
     pub enabled: bool,
     /// sidecar 镜像引用，生产环境建议固定 digest。
     pub image: String,
     /// Docker Engine endpoint，仅支持 Host 可访问的 unix/npipe endpoint。
     pub docker_endpoint: String,
+    /// 网关容器 ID 或名称；缺省读取容器内 HOSTNAME。
+    pub gateway_container: Option<String>,
     pub reconcile_interval_seconds: u64,
     pub start_timeout_seconds: u64,
     pub memory_limit_mb: u64,
@@ -164,8 +176,9 @@ impl Default for OpenAiSlotsConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            image: "ghcr.io/zyycn/codex-proxy-rs-slot-sidecar:latest".to_owned(),
+            image: "codex-slot-sidecar:local".to_owned(),
             docker_endpoint: "unix:///var/run/docker.sock".to_owned(),
+            gateway_container: None,
             reconcile_interval_seconds: 10,
             start_timeout_seconds: 30,
             memory_limit_mb: 512,
@@ -179,6 +192,15 @@ impl OpenAiSlotsConfig {
     fn validate(&self) -> Result<(), ConfigError> {
         if !self.enabled {
             return Ok(());
+        }
+        if self
+            .gateway_container
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(ConfigError::InvalidField(
+                "host.openai_slots.gateway_container",
+            ));
         }
         if self.image.trim().is_empty() {
             return Err(ConfigError::InvalidField("host.openai_slots.image"));

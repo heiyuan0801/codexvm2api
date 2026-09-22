@@ -236,6 +236,9 @@ pub enum CodexClientError {
     /// 账号启用槽位后，请求不能由受限 sidecar 表达。
     #[error("account slot does not support the required transport protocol")]
     SlotProtocol,
+    /// sidecar 自身失败，不能作为 OpenAI 账号凭据或额度证据。
+    #[error("account slot forwarding failed")]
+    SlotUnavailable { not_sent: bool },
     /// WebSocket 请求失败。
     #[error("websocket request failed: {0}")]
     WebSocket(#[from] CodexWebSocketExchangeError),
@@ -302,6 +305,9 @@ impl fmt::Debug for CodexClientError {
             Self::RequestCompression(_) => {
                 formatter.write_str("CodexClientError::RequestCompression([REDACTED])")
             }
+            Self::SlotUnavailable { .. } => {
+                formatter.write_str("CodexClientError::SlotUnavailable")
+            }
             Self::SlotProtocol => formatter.write_str("CodexClientError::SlotProtocol"),
             Self::WebSocket(_) => formatter.write_str("CodexClientError::WebSocket([REDACTED])"),
             Self::Upstream {
@@ -341,7 +347,8 @@ impl CodexClientError {
             | Self::WebSocketEncode(_)
             | Self::RequestBodyEncode(_)
             | Self::RequestCompression(_)
-            | Self::SlotProtocol => None,
+            | Self::SlotProtocol
+            | Self::SlotUnavailable { .. } => None,
         }
     }
 

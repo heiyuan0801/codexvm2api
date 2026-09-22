@@ -91,6 +91,10 @@ const selectedGroupIds = defineModel<string[]>('selectedGroupIds', { required: t
         :account-id="account.id"
       />
 
+      <RouterLink v-if="account.provider === 'openai'" to="/containers" class="text-cp-sm text-cp-primary">
+        前往容器管理配置代理、绑定账号和启停容器
+      </RouterLink>
+
       <BaseFormItem label="备注">
         <BaseTextarea
           v-model="notes"

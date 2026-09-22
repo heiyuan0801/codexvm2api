@@ -23,6 +23,7 @@ pub mod model;
 pub mod ports;
 mod use_case;
 
+pub use use_case::account_slots::{AccountSlotsService, DefaultAccountSlotsService};
 pub use use_case::key_usage::KeyUsageService;
 
 pub use use_case::{
@@ -182,6 +183,7 @@ pub enum AdminConfigError {
 /// 字段全部私有；调用方经 accessor 直接调用能力，不需要命名内部 `use_case` 模块。
 #[derive(Clone)]
 pub struct AdminServices {
+    account_slots: Option<Arc<dyn AccountSlotsService>>,
     proxies: Arc<dyn ProxiesService>,
     auth: Arc<dyn AuthService>,
     key_usage: Arc<dyn KeyUsageService>,
@@ -199,6 +201,12 @@ pub struct AdminServices {
 }
 
 impl AdminServices {
+    pub fn account_slots(&self) -> Result<&dyn AccountSlotsService, AdminError> {
+        self.account_slots
+            .as_deref()
+            .ok_or_else(|| AdminError::unavailable("槽位管理尚未初始化"))
+    }
+
     #[must_use]
     pub fn import_tasks(&self) -> &dyn ImportTasksService {
         self.import_tasks.as_ref()
@@ -283,6 +291,12 @@ pub struct AdminBundle {
 }
 
 impl AdminBundle {
+    #[must_use]
+    pub fn with_account_slots(mut self, service: Arc<dyn AccountSlotsService>) -> Self {
+        self.services.account_slots = Some(service);
+        self
+    }
+
     #[must_use]
     pub fn services(&self) -> AdminServices {
         self.services.clone()
@@ -394,6 +408,7 @@ pub async fn initialize(
         use_case::import_tasks::DefaultImportTasksService::new(openai.clone(), xai.clone());
     let import_task = use_case::import_tasks::ImportTaskWorker(import_tasks.clone());
     let services = AdminServices {
+        account_slots: None,
         key_usage,
         proxies: Arc::new(use_case::proxies::DefaultProxiesService::new(
             store.proxies(),

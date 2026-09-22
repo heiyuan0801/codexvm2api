@@ -103,6 +103,13 @@ impl CodexProvider {
             .map_err(map_selection_error)?;
         let account_selection_wait_ms =
             u64::try_from(selection_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        // sidecar 暂只支持 Responses；其他推理端点也不能绕过账号槽位直连。
+        if self.account_slot_route(lease.account_id()).await?.is_some() {
+            return Err(provider_error(
+                ProviderErrorKind::Unavailable,
+                UpstreamSendState::NotSent,
+            ));
+        }
         let lease = Arc::new(lease);
         let allows_account_state_mutation = lease.allows_account_state_mutation();
         let provider_kind = ProviderKind::new(PROVIDER_NAME)

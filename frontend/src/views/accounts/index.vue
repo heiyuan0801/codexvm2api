@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChevronDown } from '@lucide/vue'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 import AccountGroupMarks from '@/components/AccountGroupMarks.vue'
 import BaseCard from '@/components/base/BaseCard.vue'
@@ -25,6 +25,7 @@ import AccountOverviewCards from './components/AccountOverviewCards.vue'
 import AccountPlanBadge from './components/AccountPlanBadge.vue'
 import AccountQuotaPanel from './components/AccountQuotaPanel/index.vue'
 import AccountQuotaSummaryCell from './components/AccountQuotaSummaryCell/index.vue'
+import AccountSlotStatus from './components/AccountSlotStatus.vue'
 import AccountStatusBadge from './components/AccountStatusBadge/index.vue'
 import AccountTableActions from './components/AccountTableActions.vue'
 import AccountUsagePanel from './components/AccountUsagePanel.vue'
@@ -33,6 +34,7 @@ import { useAccountConnectionTest } from './composables/useAccountConnectionTest
 import { useAccountEditor } from './composables/useAccountEditor'
 import { useAccountImportTasks } from './composables/useAccountImportTasks'
 import { useAccountMutations } from './composables/useAccountMutations'
+import { useAccountSlots } from './composables/useAccountSlots'
 import { useAccountsQuery } from './composables/useAccountsQuery'
 import { useAccountsTable } from './composables/useAccountsTable'
 import { accountColumns, derivedAccountStatus } from './constants'
@@ -56,6 +58,7 @@ const {
   handlePageSizeChange,
   handleSortChange,
 } = useAccountsQuery()
+const { items: accountSlots, error: slotError } = useAccountSlots(computed(() => accounts.value.filter(account => account.provider === 'openai').map(account => account.id)))
 
 const {
   groups,
@@ -296,6 +299,11 @@ const {
                 :recovery-probe-required="row.quota.recoveryProbeRequired"
                 :next-refresh-at="row.nextRefreshAt"
               />
+            </template>
+
+            <template #slot="{ row }">
+              <AccountSlotStatus v-if="row.provider === 'openai'" :container="accountSlots[row.id]" :error="slotError" />
+              <span v-else class="text-cp-text-quaternary">—</span>
             </template>
 
             <template #planType="{ row }">

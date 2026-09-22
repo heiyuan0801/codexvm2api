@@ -11,6 +11,7 @@ use syn::{Item, visit::Visit};
 /// workspace 成员冻结清单;新增 crate 必须同步扩展本文件的依赖规则。
 pub(super) const WORKSPACE_MEMBERS: &[&str] = &[
     "apps/gateway",
+    "apps/slot-sidecar",
     "crates/gateway-admin",
     "crates/gateway-api",
     "crates/gateway-core",
@@ -72,7 +73,9 @@ fn core_value_owners_do_not_depend_on_execution_or_routing() {
             "event.rs" => Some(&["metering", "operation", "upstream", "validation"]),
             "account/selection.rs" => Some(&["account", "concurrency", "identity", "validation"]),
             "concurrency.rs" => Some(&["error"]),
-            "account/store.rs" => Some(&["account", "error", "identity", "validation"]),
+            "account/store.rs" | "account/slot.rs" => {
+                Some(&["account", "error", "identity", "validation"])
+            }
             path if path.starts_with("policy/") => Some(&["account", "policy", "validation"]),
             path if path.starts_with("account/") => Some(&["account", "identity", "validation"]),
             _ => None,
@@ -166,6 +169,7 @@ fn gateway_admin_stays_free_of_infrastructure_dependencies() {
 /// workspace 包名到冻结成员路径的映射。
 const PACKAGE_TO_MEMBER: &[(&str, &str)] = &[
     ("codex-proxy-rs", "apps/gateway"),
+    ("codex-slot-sidecar", "apps/slot-sidecar"),
     ("gateway-admin", "crates/gateway-admin"),
     ("gateway-api", "crates/gateway-api"),
     ("gateway-core", "crates/gateway-core"),
@@ -187,6 +191,7 @@ const ADAPTER_PUBLIC_MODULES: &[(&str, &[&str])] = &[
             "pricing",
             "proxy_probe",
             "serve",
+            "slots",
             "system_update",
             "workers",
         ],

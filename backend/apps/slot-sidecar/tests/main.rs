@@ -22,6 +22,7 @@ async fn forward_requires_the_slot_bearer_token() {
         .expect("response");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()["x-cpr-slot-error"], "true");
 }
 
 #[tokio::test]
@@ -34,6 +35,7 @@ async fn forward_rejects_paths_outside_the_codex_responses_endpoint() {
         .expect("response");
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()["x-cpr-slot-error"], "true");
 }
 
 #[tokio::test]
@@ -51,6 +53,7 @@ async fn forward_uses_the_required_proxy_and_streams_the_response() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["x-upstream-test"], "proxied");
+    assert!(!response.headers().contains_key("x-cpr-slot-error"));
     let body = to_bytes(response.into_body(), 1024)
         .await
         .expect("streamed body");
@@ -66,17 +69,35 @@ async fn forward_uses_the_required_proxy_and_streams_the_response() {
             .contains("authorization: bearer upstream-token")
     );
     assert!(!captured.to_ascii_lowercase().contains("x-cpr-slot-secret"));
+    assert_eq!(
+        captured
+            .to_ascii_lowercase()
+            .matches("content-type: application/json")
+            .count(),
+        1
+    );
+    assert!(captured.contains(r#""future":123456789012345678901234567890"#));
+    assert!(captured.to_ascii_lowercase().contains("x-extension: first"));
+    assert!(
+        captured
+            .to_ascii_lowercase()
+            .contains("x-extension: second")
+    );
 }
 
 fn forward_request(token: Option<&str>, path: &str) -> Request<Body> {
     let body = serde_json::json!({
         "path": path,
-        "headers": {
-            "authorization": "Bearer upstream-token",
-            "content-type": "application/json",
-            "x-cpr-slot-secret": "must-not-leak"
-        },
-        "body": { "model": "gpt-test", "stream": true }
+        "headers": [
+            ["authorization", b"Bearer upstream-token".as_slice()],
+            ["content-type", b"application/json".as_slice()],
+            ["x-cpr-slot-secret", b"must-not-leak".as_slice()],
+            ["x-extension", b"first".as_slice()],
+            ["x-extension", b"second".as_slice()]
+        ],
+        "body": serde_json::from_str::<serde_json::Value>(
+            r#"{"model":"gpt-test","future":123456789012345678901234567890,"stream":true}"#
+        ).expect("request body")
     });
     let mut request = Request::builder()
         .method("POST")
@@ -140,6 +161,7 @@ impl CaptureProxy {
                 "HTTP/1.1 200 OK\r\n",
                 "content-type: text/event-stream\r\n",
                 "x-upstream-test: proxied\r\n",
+                "x-cpr-slot-error: forged\r\n",
                 "content-length: 15\r\n",
                 "\r\n",
                 "data: proxied\n\n"

@@ -63,12 +63,26 @@ pub async fn run() -> Result<(), BootstrapError> {
         openai,
     } = config;
 
+    let slots_config = host.openai_slots.clone();
     let host = gateway_host::initialize(host).await?;
     host.report_startup_ready("Host");
     let mut store = gateway_store::initialize(store).await?;
     host.report_startup_ready("Store");
     let provider_ports = store.provider_ports();
-    let mut openai = provider_openai::initialize(openai, provider_ports.clone()).await?;
+    let slots = gateway_host::slots::initialize_account_slots(
+        slots_config,
+        store.account_slots(),
+        provider_ports.accounts(),
+    )?;
+    let mut openai = provider_openai::initialize_with_account_slots(
+        openai,
+        provider_ports.clone(),
+        Some(provider_openai::OpenAiAccountSlotPorts {
+            store: store.account_slots(),
+            runtime: slots.registry.clone(),
+        }),
+    )
+    .await?;
     host.report_startup_ready("OpenAI Provider");
     let mut xai = provider_xai::initialize(provider_ports).await?;
     host.report_startup_ready("xAI Provider");
@@ -91,6 +105,13 @@ pub async fn run() -> Result<(), BootstrapError> {
         },
     )
     .await?;
+    admin = admin.with_account_slots(std::sync::Arc::new(
+        gateway_admin::DefaultAccountSlotsService::new(
+            store.account_slot_admin(),
+            slots.registry,
+            core.snapshot_control(),
+        ),
+    ));
     host.report_startup_ready("Admin");
 
     let mut probes = store.health_probes();
@@ -107,6 +128,7 @@ pub async fn run() -> Result<(), BootstrapError> {
     host.report_startup_ready("API");
 
     let mut plan = store.take_worker_contributions();
+    plan.push(slots.worker);
     plan.extend(core.take_worker_contributions());
     plan.extend(openai.take_worker_contributions());
     plan.extend(xai.take_worker_contributions());
@@ -128,6 +150,8 @@ pub enum BootstrapError {
     Store(#[from] gateway_store::StoreError),
     #[error(transparent)]
     OpenAi(#[from] provider_openai::OpenAiInitializeError),
+    #[error(transparent)]
+    AccountSlots(#[from] gateway_host::slots::AccountSlotEngineError),
     #[error(transparent)]
     Xai(#[from] provider_xai::XaiInitializeError),
     #[error(transparent)]

@@ -1,0 +1,17 @@
+# 显式启用的 Docker 槽位扩展，默认 compose 不授予 Docker 控制权
+services:
+  codex-proxy-rs:
+    group_add:
+      - '${CPR_DOCKER_GID:?Set CPR_DOCKER_GID to the Docker socket group ID}'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      CPR_OPENAI_SLOTS_ENABLED: 'true'
+      CPR_OPENAI_SLOTS_IMAGE: ${CPR_SLOT_IMAGE:-codex-slot-sidecar:local}
+
+  slot-sidecar:
+    profiles: [slot-build]
+    image: ${CPR_SLOT_IMAGE:-codex-slot-sidecar:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.slot-sidecar
