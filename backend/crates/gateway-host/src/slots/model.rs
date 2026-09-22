@@ -1,7 +1,8 @@
 //! 槽位资源期望与可恢复运行观测。
 
 use gateway_core::account::{
-    AccountSlotGeneration, AccountSlotInstanceId, OutboundProxy, ProviderAccountId,
+    AccountSlotGeneration, AccountSlotInstanceId, AccountSlotRoute, OutboundProxy,
+    ProviderAccountId,
 };
 
 /// Host 对单个账号槽位的收敛输入。
@@ -11,6 +12,8 @@ pub struct DesiredAccountSlot {
     pub instance_id: AccountSlotInstanceId,
     pub generation: AccountSlotGeneration,
     pub hostname: String,
+    pub machine_id: String,
+    pub installation_id: String,
     pub timezone: String,
     pub outbound_proxy: OutboundProxy,
 }
@@ -23,6 +26,8 @@ impl std::fmt::Debug for DesiredAccountSlot {
             .field("instance_id", &self.instance_id)
             .field("generation", &self.generation)
             .field("hostname", &self.hostname)
+            .field("machine_id", &"<redacted>")
+            .field("installation_id", &"<redacted>")
             .field("timezone", &self.timezone)
             .field("outbound_proxy", &"<redacted>")
             .finish()
@@ -40,9 +45,14 @@ pub enum AccountSlotRuntimeState {
 /// 可从 Docker 和健康检查重建的槽位观测，不是业务事实。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountSlotHealth {
-    pub account_id: ProviderAccountId,
     pub instance_id: AccountSlotInstanceId,
     pub generation: AccountSlotGeneration,
     pub state: AccountSlotRuntimeState,
     pub reason: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConvergedAccountSlot {
+    pub health: AccountSlotHealth,
+    pub route: Option<AccountSlotRoute>,
 }

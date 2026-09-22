@@ -54,8 +54,12 @@ pub async fn serve(config: SidecarConfig) -> Result<(), SidecarBuildError> {
         .map_err(|_| SidecarBuildError::Serve)
 }
 
-async fn ready() -> StatusCode {
-    StatusCode::OK
+async fn ready(State(state): State<Arc<SidecarState>>, headers: HeaderMap) -> StatusCode {
+    if authorized(&headers, &state.token) {
+        StatusCode::OK
+    } else {
+        StatusCode::UNAUTHORIZED
+    }
 }
 
 async fn handle_forward(

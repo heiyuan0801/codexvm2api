@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use super::{AccountSlotHealth, DesiredAccountSlot};
+use super::{AccountSlotHealth, ConvergedAccountSlot, DesiredAccountSlot};
 use gateway_core::account::AccountSlotInstanceId;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -21,6 +21,8 @@ pub enum AccountSlotEngineErrorKind {
 /// Docker adapter 必须只操作带本应用 owner labels 的精确资源。
 #[async_trait]
 pub trait AccountSlotEngine: Send + Sync {
+    async fn list_owned(&self) -> Result<Vec<AccountSlotHealth>, AccountSlotEngineError>;
+
     async fn inspect(
         &self,
         instance_id: AccountSlotInstanceId,
@@ -29,7 +31,12 @@ pub trait AccountSlotEngine: Send + Sync {
     async fn converge(
         &self,
         desired: &DesiredAccountSlot,
-    ) -> Result<AccountSlotHealth, AccountSlotEngineError>;
+    ) -> Result<ConvergedAccountSlot, AccountSlotEngineError>;
 
     async fn stop(&self, instance_id: AccountSlotInstanceId) -> Result<(), AccountSlotEngineError>;
+}
+
+#[async_trait]
+pub trait AccountSlotDesiredStateSource: Send + Sync {
+    async fn list_desired_slots(&self) -> Result<Vec<DesiredAccountSlot>, AccountSlotEngineError>;
 }

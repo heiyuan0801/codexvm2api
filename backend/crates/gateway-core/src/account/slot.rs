@@ -199,6 +199,65 @@ pub trait ProviderAccountSlotStore: Send + Sync {
     async fn list_account_slots(&self) -> Result<Vec<ProviderAccountSlot>, StoreError>;
 }
 
+/// Provider 调用 sidecar 所需的每槽认证值。
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccountSlotBearerToken(Vec<u8>);
+
+impl AccountSlotBearerToken {
+    /// # Errors
+    ///
+    /// token 熵不足或超过内部协议上限时拒绝。
+    pub fn new(value: Vec<u8>) -> Result<Self, IdentifierError> {
+        if !(32..=4096).contains(&value.len()) {
+            return Err(IdentifierError::InvalidFormat);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn expose_to_provider(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for AccountSlotBearerToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AccountSlotBearerToken(<redacted>)")
+    }
+}
+
+/// Ready 槽位的私有网络地址与认证材料。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountSlotRoute {
+    endpoint: url::Url,
+    bearer_token: AccountSlotBearerToken,
+}
+
+impl AccountSlotRoute {
+    #[must_use]
+    pub const fn new(endpoint: url::Url, bearer_token: AccountSlotBearerToken) -> Self {
+        Self {
+            endpoint,
+            bearer_token,
+        }
+    }
+
+    #[must_use]
+    pub const fn endpoint(&self) -> &url::Url {
+        &self.endpoint
+    }
+
+    #[must_use]
+    pub const fn bearer_token(&self) -> &AccountSlotBearerToken {
+        &self.bearer_token
+    }
+}
+
+/// Provider 查询 Ready 槽位的进程内运行时端口。
+pub trait AccountSlotRuntime: Send + Sync {
+    fn route(&self, account_id: &ProviderAccountId) -> Option<AccountSlotRoute>;
+}
+
 fn valid_hostname(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 63

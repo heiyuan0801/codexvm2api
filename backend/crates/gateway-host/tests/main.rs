@@ -4,5 +4,6 @@ mod logging;
 mod pricing;
 mod proxy_probe;
 mod serve;
+mod slots;
 mod system_update;
 mod workers;
