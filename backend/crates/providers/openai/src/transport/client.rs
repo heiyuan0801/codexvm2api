@@ -233,6 +233,9 @@ pub enum CodexClientError {
     /// 上游请求体 zstd 压缩失败。
     #[error("failed to compress upstream request body: {0}")]
     RequestCompression(#[source] std::io::Error),
+    /// 账号启用槽位后，请求不能由受限 sidecar 表达。
+    #[error("account slot does not support the required transport protocol")]
+    SlotProtocol,
     /// WebSocket 请求失败。
     #[error("websocket request failed: {0}")]
     WebSocket(#[from] CodexWebSocketExchangeError),
@@ -299,6 +302,7 @@ impl fmt::Debug for CodexClientError {
             Self::RequestCompression(_) => {
                 formatter.write_str("CodexClientError::RequestCompression([REDACTED])")
             }
+            Self::SlotProtocol => formatter.write_str("CodexClientError::SlotProtocol"),
             Self::WebSocket(_) => formatter.write_str("CodexClientError::WebSocket([REDACTED])"),
             Self::Upstream {
                 status,
@@ -336,7 +340,8 @@ impl CodexClientError {
             | Self::InvalidHeaderValue(_)
             | Self::WebSocketEncode(_)
             | Self::RequestBodyEncode(_)
-            | Self::RequestCompression(_) => None,
+            | Self::RequestCompression(_)
+            | Self::SlotProtocol => None,
         }
     }
 
@@ -671,6 +676,7 @@ pub struct CodexBackendClient {
     pub(super) websocket_origin_key: String,
     pub(super) outbound_proxy: Option<gateway_core::account::OutboundProxy>,
     pub(super) egress_key: String,
+    pub(super) slot_route: Option<gateway_core::account::AccountSlotRoute>,
 }
 
 impl CodexBackendClient {
@@ -741,6 +747,13 @@ impl CodexBackendClient {
             self.direct_client.clone()
         };
         Ok(client)
+    }
+
+    /// 固定本次推理只能经 Ready 槽位发送；transport 不得回退到账号直连 client。
+    #[doc(hidden)]
+    pub fn with_slot_route(mut self, route: gateway_core::account::AccountSlotRoute) -> Self {
+        self.slot_route = Some(route);
+        self
     }
 }
 

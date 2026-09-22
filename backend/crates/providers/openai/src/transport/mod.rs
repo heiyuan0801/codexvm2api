@@ -17,6 +17,7 @@ pub mod request;
 pub mod reset_credits;
 mod response_meta;
 pub(crate) mod session;
+mod slot;
 pub mod subscription;
 mod time;
 pub(crate) use downstream::normalize_non_codex_request_body;

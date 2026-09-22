@@ -69,6 +69,7 @@ impl CodexBackendClient {
             websocket_origin_key: websocket_origin_key(&base_url),
             outbound_proxy: None,
             egress_key: String::new(),
+            slot_route: None,
             base_url,
             official_base_url: crate::OFFICIAL_CODEX_BASE_URL.to_owned(),
             protocol: OpenAiUpstreamProtocol::Codex,
@@ -107,7 +108,6 @@ impl CodexBackendClient {
         upstream_body.insert("stream".to_owned(), serde_json::Value::Bool(true));
         let body =
             serde_json::to_vec(&upstream_body).map_err(CodexClientError::RequestBodyEncode)?;
-        let endpoint = endpoint_url(&self.base_url, self.protocol.responses_path());
         let trace = context
             .trace
             .cloned()
@@ -123,15 +123,30 @@ impl CodexBackendClient {
                 .map(|(name, value)| (name.as_str(), value.as_bytes())),
         );
         trace.capture("upstream.request.body", &body);
-        let mut outbound = self.client.post(endpoint).headers(headers);
-        let body = if self.protocol == OpenAiUpstreamProtocol::Codex {
-            outbound = outbound.header(CONTENT_ENCODING, HeaderValue::from_static("zstd"));
-            zstd::stream::encode_all(std::io::Cursor::new(body), 3)
-                .map_err(CodexClientError::RequestCompression)?
+        let response = if let Some(route) = &self.slot_route {
+            if self.protocol != OpenAiUpstreamProtocol::Codex {
+                return Err(CodexClientError::SlotProtocol);
+            }
+            super::slot::send_slot_request(
+                &self.direct_client,
+                route,
+                CODEX_RESPONSES_PATH,
+                &headers,
+                &serde_json::Value::Object(upstream_body),
+            )
+            .await?
         } else {
-            body
+            let endpoint = endpoint_url(&self.base_url, self.protocol.responses_path());
+            let mut outbound = self.client.post(endpoint).headers(headers);
+            let body = if self.protocol == OpenAiUpstreamProtocol::Codex {
+                outbound = outbound.header(CONTENT_ENCODING, HeaderValue::from_static("zstd"));
+                zstd::stream::encode_all(std::io::Cursor::new(body), 3)
+                    .map_err(CodexClientError::RequestCompression)?
+            } else {
+                body
+            };
+            outbound.body(body).send().await?
         };
-        let response = outbound.body(body).send().await?;
         let upstream_headers_ms = elapsed_duration_millis(headers_started_at.elapsed());
         let http_version = http_version_name(response.version()).to_string();
         let status = response.status();
@@ -243,6 +258,19 @@ impl CodexBackendClient {
         pool_account_id: Option<&str>,
     ) -> CodexClientResult<PreparedResponseTransport> {
         let requirement = transport_requirement(request);
+        if self.slot_route.is_some() {
+            if requirement.requires_websocket() {
+                return Err(CodexClientError::SlotProtocol);
+            }
+            return Ok(PreparedResponseTransport {
+                requirement,
+                route: PreparedResponseRoute::Http,
+                metrics: CodexTransportMetrics {
+                    decision: Some(CodexTransportDecision::HttpRequired),
+                    ..CodexTransportMetrics::default()
+                },
+            });
+        }
         context.trace.cloned().unwrap_or_default().record(
             "transport.preparing",
             serde_json::json!({

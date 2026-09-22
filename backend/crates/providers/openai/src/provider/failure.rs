@@ -858,6 +858,7 @@ pub(super) fn map_client_error(
         | CodexClientError::WebSocketEncode(_)
         | CodexClientError::RequestBodyEncode(_)
         | CodexClientError::RequestCompression(_)
+        | CodexClientError::SlotProtocol
         | CodexClientError::ModelCatalog(_)
         | CodexClientError::CustomCa(_) => MappedProviderFailure::plain(provider_error(
             ProviderErrorKind::Protocol,
@@ -1049,6 +1050,11 @@ fn client_diagnostic(error: &CodexClientError) -> Option<ProviderDiagnostic> {
             "prepare",
             "request_compression_failed",
             "OpenAI request compression failed".to_owned(),
+        ),
+        CodexClientError::SlotProtocol => (
+            "prepare",
+            "slot_protocol_unsupported",
+            "OpenAI account slot cannot represent the required transport".to_owned(),
         ),
         CodexClientError::CustomCa(_) => (
             "prepare",

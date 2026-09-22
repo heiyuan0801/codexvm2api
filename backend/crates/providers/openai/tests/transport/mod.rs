@@ -61,6 +61,7 @@ mod profile_contract;
 mod protocol;
 mod request;
 mod reset_credits;
+mod slot;
 mod subscription;
 mod tls;
 mod usage;

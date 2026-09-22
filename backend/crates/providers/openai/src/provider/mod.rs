@@ -9,7 +9,10 @@ use std::time::{Duration, Instant, SystemTime};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{StreamExt, future::BoxFuture};
-use gateway_core::account::{AccountFeedbackStats, ProviderAccount};
+use gateway_core::account::{
+    AccountFeedbackStats, AccountSlotRoute, AccountSlotRuntime, ProviderAccount, ProviderAccountId,
+    ProviderAccountSlotStore,
+};
 use gateway_core::engine::continuation::{ContinuationBinding, NativeContinuationScope};
 use gateway_core::engine::provider::{
     ContinuationRequestObservation, EventStream, Provider, ProviderCallMetadata, ProviderRequest,
@@ -112,6 +115,7 @@ const PROVIDER_NAME: &str = "openai";
 const HTTP_SSE_TRANSPORT: &str = "http_sse";
 const HTTP_JSON_TRANSPORT: &str = "http_json";
 const WEBSOCKET_TRANSPORT: &str = "websocket";
+const SLOT_HTTP_SSE_TRANSPORT: &str = "slot_http_sse";
 const MAX_COOKIE_HEADER_BYTES: usize = 16 * 1024;
 /// 提交边界前最多保留 64 KiB 原始上游 chunk；达到阈值后结束无感换号窗口，
 /// 但不会把上游数据改写成协议失败。
@@ -150,6 +154,13 @@ pub struct CodexProvider {
     session_identity: Option<CodexSessionIdentity>,
     session_transport_recovery: CodexSessionTransportRecovery,
     stream_max_retries: u32,
+    account_slots: Option<OpenAiAccountSlots>,
+}
+
+#[derive(Clone)]
+struct OpenAiAccountSlots {
+    store: Arc<dyn ProviderAccountSlotStore>,
+    runtime: Arc<dyn AccountSlotRuntime>,
 }
 
 impl CodexProvider {
@@ -204,6 +215,40 @@ impl CodexProvider {
             session_identity: None,
             session_transport_recovery: CodexSessionTransportRecovery::default(),
             stream_max_retries,
+            account_slots: None,
+        })
+    }
+
+    /// 启用账号槽位意图读取和 Ready route 解析；启用账号缺 route 时严格 fail closed。
+    #[must_use]
+    pub fn with_account_slots(
+        mut self,
+        store: Arc<dyn ProviderAccountSlotStore>,
+        runtime: Arc<dyn AccountSlotRuntime>,
+    ) -> Self {
+        self.account_slots = Some(OpenAiAccountSlots { store, runtime });
+        self
+    }
+
+    async fn account_slot_route(
+        &self,
+        account_id: &ProviderAccountId,
+    ) -> Result<Option<AccountSlotRoute>, ProviderError> {
+        let Some(slots) = &self.account_slots else {
+            return Ok(None);
+        };
+        let desired = slots
+            .store
+            .get_account_slot(account_id)
+            .await
+            .map_err(|_| {
+                provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent)
+            })?;
+        if desired.is_none_or(|slot| !slot.enabled()) {
+            return Ok(None);
+        }
+        slots.runtime.route(account_id).map(Some).ok_or_else(|| {
+            provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent)
         })
     }
 
@@ -451,6 +496,7 @@ impl Provider for CodexProvider {
         let account_selection_wait_ms =
             u64::try_from(selection_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
         let lease = Arc::new(lease);
+        let slot_route = self.account_slot_route(lease.account_id()).await?;
         // 首字计时的起点：账号选择完成之后、上游建立之前。
         if previous_session.as_ref().is_some_and(|state| {
             state
@@ -570,7 +616,14 @@ impl Provider for CodexProvider {
         let requirement = transport_requirement(&upstream_request);
         let api_http = matches!(lease.authentication(), crate::credential::CodexRuntimeAuthentication::ApiKey(auth)
             if auth.configuration.transport == crate::credential::ApiKeyTransport::Http);
-        if api_http && requirement.requires_websocket() {
+        if (api_http && requirement.requires_websocket())
+            || (slot_route.is_some()
+                && (requirement.requires_websocket()
+                    || matches!(
+                        lease.authentication(),
+                        crate::credential::CodexRuntimeAuthentication::ApiKey(_)
+                    )))
+        {
             return Err(provider_error(
                 ProviderErrorKind::Unsupported,
                 UpstreamSendState::NotSent,
@@ -585,7 +638,9 @@ impl Provider for CodexProvider {
             && session_affinity
                 .as_ref()
                 .is_some_and(|affinity| self.session_transport_recovery.uses_http(affinity.key()));
-        let transport = if requirement.requires_websocket() {
+        let transport = if slot_route.is_some() {
+            CodexProviderTransport::HttpOnly
+        } else if requirement.requires_websocket() {
             CodexProviderTransport::PreferWebSocket
         } else if context.transport() == AttemptTransport::Fallback || session_http_fallback {
             CodexProviderTransport::HttpOnly
@@ -597,9 +652,12 @@ impl Provider for CodexProvider {
             provider_kind,
             upstream_model.clone(),
             lease.account_id().clone(),
-            UpstreamTransport::new(transport_name(transport)).map_err(|_| {
-                provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent)
-            })?,
+            UpstreamTransport::new(if slot_route.is_some() {
+                SLOT_HTTP_SSE_TRANSPORT
+            } else {
+                transport_name(transport)
+            })
+            .map_err(|_| provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent))?,
         )
         .with_selection_observation(ProviderSelectionObservation::new(
             account_selection_wait_ms,
@@ -629,14 +687,18 @@ impl Provider for CodexProvider {
             AttemptTransport::Retry(retry_index) => retry_index.get(),
             AttemptTransport::Default | AttemptTransport::Fallback => 0,
         };
+        let mut client = self
+            .client_for_request(&context)?
+            .for_account(lease.account())
+            .map_err(|_| {
+                provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent)
+            })?
+            .with_authentication(lease.authentication());
+        if let Some(route) = slot_route {
+            client = client.with_slot_route(route);
+        }
         let events = cold_response_stream(ColdResponse {
-            client: self
-                .client_for_request(&context)?
-                .for_account(lease.account())
-                .map_err(|_| {
-                    provider_error(ProviderErrorKind::Unavailable, UpstreamSendState::NotSent)
-                })?
-                .with_authentication(lease.authentication()),
+            client,
             response_origin: self.responses_url.clone(),
             request: upstream_request,
             upstream_model: upstream_model.clone(),
