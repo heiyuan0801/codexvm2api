@@ -109,6 +109,15 @@ impl SlotEgressManager {
                 tasks,
             },
         );
+        tracing::info!(
+            target: "slot_egress",
+            instance = %instance,
+            bridge = %net::bridge_name(instance),
+            dns_port = ports.dns,
+            tls_port = ports.tls,
+            http_port = ports.http,
+            "slot egress listener established"
+        );
         Ok(())
     }
 
@@ -130,6 +139,19 @@ impl SlotEgressManager {
             self.iptables.run(&rule.0).await?;
         }
         Ok(())
+    }
+
+    /// 删除上一进程遗留的槽位用户链，并返回删除的链数量。
+    pub async fn cleanup_stale_chains(&self) -> Result<usize, EgressError> {
+        let removed = self.iptables.cleanup_stale_chains().await?;
+        if removed > 0 {
+            tracing::info!(
+                target: "slot_egress",
+                removed,
+                "cleaned stale slot egress chains"
+            );
+        }
+        Ok(removed)
     }
 
     /// 关闭入口并移除该槽位的全部规则。

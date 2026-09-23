@@ -468,6 +468,11 @@ impl AccountSlotEngine for BollardAccountSlotEngine {
     }
 
     async fn list_owned(&self) -> Result<Vec<AccountSlotHealth>, AccountSlotEngineError> {
+        // 首轮对账即使没有 desired slot，也要先清理上一进程留下的内核规则。
+        self.egress
+            .cleanup_stale()
+            .await
+            .map_err(map_egress_error)?;
         let filters = HashMap::from([(
             "label".to_owned(),
             vec![format!("{OWNER_LABEL}={OWNER_VALUE}")],

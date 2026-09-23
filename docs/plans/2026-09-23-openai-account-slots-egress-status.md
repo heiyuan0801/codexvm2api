@@ -1,9 +1,10 @@
 # OpenAI 账号独立槽位：出网模块现状与下一步
 
-> 状态：**进行中（P0 接线已完成）**。出网模块已经接到 Docker 引擎：网络身份会被固定并校验，
-> 规则在容器创建/启动前应用，删除时先拆规则再拆网络。剩余工作是启动清理、观测和 Linux + Docker 真机验收。
+> 状态：**进行中（P0 完成，P1 大部分完成）**。出网模块已经接到 Docker 引擎：网络身份会被固定并校验，
+> 规则在容器创建/启动前应用，删除时先拆规则再拆网络；首轮对账会清理遗留用户链并记录结构化日志。
+> 剩余工作是指标后端接入和 Linux + Docker 真机验收。
 >
-> 基线：`codex/continue-account-slots` @ `7ddc0ed3`（P0 接线在该提交工作树上继续）
+> 基线：`codex/continue-account-slots` @ `e297c353`（P1 在该提交工作树上继续）
 > 编制日期：2026-09-23
 
 ---
@@ -190,7 +191,7 @@ backend/crates/gateway-host/src/slots/
     └── manager.rs   174    ★ 每槽入口与规则的生命周期
 ```
 
-测试：`tests/slots/` 下 5 个文件共 1509 行；`src/slots/` 内有 24 个单元测试；
+测试：`tests/slots/` 下 5 个文件；`src/slots/` 内有 26 个单元测试；
 `tests/slots/egress.rs` 有 8 个端到端测试。
 
 ### 3.2 各层完成度
@@ -211,7 +212,7 @@ backend/crates/gateway-host/src/slots/
 
 本次接线后的验证以 `+1.97.0` 工具链运行：`cargo check -p gateway-host --all-targets --locked` 通过，
 Docker 生命周期测试 `cargo test -p gateway-host --test main slots::docker --locked` 为 4 passed。
-完整 workspace 测试和 Linux + Docker 真机验证仍是提交前检查项。
+完整 `gateway-host` 测试以 `--test-threads=1` 运行：126 passed、1 ignored；Linux + Docker 真机验证仍待执行。
 
 ### 3.4 未完成的部分（本模块）
 
@@ -279,11 +280,12 @@ P0 接线前的缺口已完成。当前实现要点如下：
 
 7. `net::LISTEN_ADDR` 已删除。 ✅
 
-### P1 — 补上可观测性与运维安全
+### P1 — 可观测性与运维安全（大部分完成）
 
-- 出网相关事件补齐结构化日志与指标（入口建立/规则下发失败、代理拒绝率、DNS 转发失败率）；
-- 启动时清理**上一进程遗留**的 `CPR-*` 链：进程崩溃不会回滚内核规则，重启后这些跳转仍在，
-  指向已经不存在的监听端口。
+- 已补齐 `slot_egress` 结构化日志：入口建立、规则应用/拆除失败、代理连接失败、DNS 转发失败和遗留链清理；
+- 首轮 `list_owned` 对账（或首次槽位 ensure/remove）会严格清理 `CPR-` + 12 位十六进制用户链，
+  先删跳转再 flush/delete，失败则阻止槽位继续收敛；
+- 当前仓库没有 metrics 后端，代理拒绝率和 DNS 失败率暂以结构化日志字段记录，后续接入指标系统。
 
 ### P2 — 其余任务（代码已完成，待环境验收）
 

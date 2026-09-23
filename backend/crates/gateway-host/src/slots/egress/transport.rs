@@ -145,7 +145,7 @@ async fn accept_tcp<F>(
                 let config = config.borrow().clone();
                 tokio::spawn(async move {
                     if let Err(error) = handle_connection(stream, protocol, port, &config).await {
-                        debug!(error = %error, protocol = ?protocol, "slot egress connection ended with an error");
+                        debug!(target: "slot_egress", error = %error, protocol = ?protocol, "slot egress connection ended with an error");
                     }
                 });
             }
@@ -175,7 +175,7 @@ pub async fn handle_connection(
     let mut upstream = match connect_via(proxy, &target).await {
         Ok(upstream) => upstream,
         Err(error) => {
-            debug!(host = %host, error = %error, "slot egress dial failed");
+            debug!(target: "slot_egress", host = %host, error = %error, "slot egress dial failed");
             return Ok(());
         }
     };
@@ -271,7 +271,15 @@ async fn answer_query(request: &[u8]) -> Option<Vec<u8>> {
         )),
         dns::Resolution::Forward => match forward(request).await {
             Ok(response) => Some(response),
-            Err(_) => Some(servfail(request)),
+            Err(error) => {
+                tracing::warn!(
+                    target: "slot_egress",
+                    stage = "dns_forward",
+                    error = %error,
+                    "slot DNS forward failed"
+                );
+                Some(servfail(request))
+            }
         },
     }
 }

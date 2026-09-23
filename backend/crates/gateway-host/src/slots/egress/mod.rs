@@ -36,6 +36,11 @@ pub use transport::{Protocol, SlotEgress, SlotEgressConfig, handle_connection};
 /// `iptables`，从而在没有 Linux 网桥的环境中仍能验证 Docker 操作顺序。
 #[async_trait]
 pub trait SlotEgressLifecycle: Send + Sync {
+    /// 清理进程重启后遗留的用户链；默认实现供测试替身使用。
+    async fn cleanup_stale(&self) -> Result<(), EgressError> {
+        Ok(())
+    }
+
     async fn ensure(
         &self,
         instance: AccountSlotInstanceId,
@@ -50,6 +55,7 @@ pub trait SlotEgressLifecycle: Send + Sync {
 /// `SlotEgressManager` 的并发适配器；Docker 引擎的生命周期方法只持有 `&self`。
 pub struct ManagedSlotEgress {
     manager: Mutex<SlotEgressManager>,
+    cleanup_done: Mutex<bool>,
 }
 
 impl std::fmt::Debug for ManagedSlotEgress {
@@ -66,6 +72,7 @@ impl ManagedSlotEgress {
     pub fn new(iptables: Arc<dyn Iptables>) -> Self {
         Self {
             manager: Mutex::new(SlotEgressManager::new(iptables)),
+            cleanup_done: Mutex::new(false),
         }
     }
 }
@@ -77,15 +84,68 @@ impl SlotEgressLifecycle for ManagedSlotEgress {
         instance: AccountSlotInstanceId,
         proxy: &OutboundProxy,
     ) -> Result<(), EgressError> {
-        self.manager.lock().await.ensure(instance, proxy).await
+        self.cleanup_stale().await?;
+        let result = self.manager.lock().await.ensure(instance, proxy).await;
+        if let Err(error) = result {
+            tracing::warn!(
+                target: "slot_egress",
+                instance = %instance,
+                stage = "ensure",
+                error = %error,
+                "slot egress listener setup failed"
+            );
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn cleanup_stale(&self) -> Result<(), EgressError> {
+        let manager = self.manager.lock().await;
+        let mut cleanup_done = self.cleanup_done.lock().await;
+        if !*cleanup_done {
+            if let Err(error) = manager.cleanup_stale_chains().await {
+                tracing::warn!(
+                    target: "slot_egress",
+                    stage = "startup_cleanup",
+                    error = %error,
+                    "stale slot egress chain cleanup failed"
+                );
+                return Err(error);
+            }
+            *cleanup_done = true;
+        }
+        Ok(())
     }
 
     async fn apply_rules(&self, instance: AccountSlotInstanceId) -> Result<(), EgressError> {
-        self.manager.lock().await.apply_rules(instance).await
+        let result = self.manager.lock().await.apply_rules(instance).await;
+        if let Err(error) = result {
+            tracing::warn!(
+                target: "slot_egress",
+                instance = %instance,
+                stage = "apply_rules",
+                error = %error,
+                "slot egress rule application failed"
+            );
+            return Err(error);
+        }
+        Ok(())
     }
 
     async fn remove(&self, instance: AccountSlotInstanceId) -> Result<(), EgressError> {
-        self.manager.lock().await.remove(instance).await
+        self.cleanup_stale().await?;
+        let result = self.manager.lock().await.remove(instance).await;
+        if let Err(error) = result {
+            tracing::warn!(
+                target: "slot_egress",
+                instance = %instance,
+                stage = "remove",
+                error = %error,
+                "slot egress teardown failed"
+            );
+            return Err(error);
+        }
+        Ok(())
     }
 }
 
@@ -105,5 +165,42 @@ pub enum EgressError {
 impl From<IptablesError> for EgressError {
     fn from(_: IptablesError) -> Self {
         Self::Iptables
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeIptables {
+        cleanups: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Iptables for FakeIptables {
+        async fn chain_exists(&self, _table: &str, _chain: &str) -> Result<bool, IptablesError> {
+            Ok(false)
+        }
+
+        async fn run(&self, _args: &[String]) -> Result<(), IptablesError> {
+            Ok(())
+        }
+
+        async fn cleanup_stale_chains(&self) -> Result<usize, IptablesError> {
+            self.cleanups.fetch_add(1, Ordering::SeqCst);
+            Ok(2)
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_egress_cleans_stale_chains_once() {
+        let iptables = Arc::new(FakeIptables::default());
+        let managed = ManagedSlotEgress::new(iptables.clone());
+        managed.cleanup_stale().await.unwrap();
+        managed.cleanup_stale().await.unwrap();
+        assert_eq!(iptables.cleanups.load(Ordering::SeqCst), 1);
     }
 }
