@@ -44,9 +44,7 @@ pub async fn connect_via(
         let stream = TcpStream::connect(&authority).await?;
         stream.set_nodelay(true)?;
         match url.scheme() {
-            "socks5" | "socks5h" => {
-                socks5(stream, target, url.scheme() == "socks5h", &url).await
-            }
+            "socks5" | "socks5h" => socks5(stream, target, url.scheme() == "socks5h", &url).await,
             "http" => http_connect(stream, target, &url).await,
             // `validate_scheme` 已排除其余方案，这里只是兜底。
             _ => Err(DialError::InvalidProxy),
@@ -77,9 +75,7 @@ fn validate_scheme(scheme: &str) -> Result<(), DialError> {
 /// 因此这里只补端口，不再自行加括号——否则会拼出 `[[::1]]` 这种无法解析的地址。
 fn endpoint_authority(url: &Url) -> Result<String, DialError> {
     let host = url.host_str().ok_or(DialError::InvalidProxy)?;
-    let port = url
-        .port_or_known_default()
-        .ok_or(DialError::InvalidProxy)?;
+    let port = url.port_or_known_default().ok_or(DialError::InvalidProxy)?;
     Ok(format!("{host}:{port}"))
 }
 
@@ -133,7 +129,11 @@ async fn socks5(
     let (user, password) = credentials(url);
     let authenticated = user.is_some() && password.is_some();
     // 只声明实际需要的认证方式，避免在没有凭据时被要求认证。
-    let methods: &[u8] = if authenticated { &[0x00, 0x02] } else { &[0x00] };
+    let methods: &[u8] = if authenticated {
+        &[0x00, 0x02]
+    } else {
+        &[0x00]
+    };
     let mut greeting = vec![0x05, methods.len() as u8];
     greeting.extend_from_slice(methods);
     stream.write_all(&greeting).await?;
@@ -232,8 +232,7 @@ async fn read_until_headers_end(stream: &mut TcpStream) -> Result<Vec<u8>, DialE
 
 /// `Basic` 认证用的 base64；只编码 ASCII 凭据，避免引入额外依赖。
 fn base64(user: &str, password: &str) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let raw = format!("{user}:{password}");
     let bytes = raw.as_bytes();
     let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);

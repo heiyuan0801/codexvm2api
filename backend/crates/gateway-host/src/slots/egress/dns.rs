@@ -9,7 +9,12 @@ use std::net::{IpAddr, Ipv4Addr};
 /// 合成地址使用的保留网段，落在 RFC 5737 文档地址内，不会与真实主机冲突。
 pub const SYNTHETIC_RANGE: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 0);
 /// 需要被接管并合成地址的后缀。
-const INTERCEPT_SUFFIXES: &[&str] = &["openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"];
+const INTERCEPT_SUFFIXES: &[&str] = &[
+    "openai.com",
+    "chatgpt.com",
+    "oaistatic.com",
+    "oaiusercontent.com",
+];
 /// 合成记录 TTL，短 TTL 让地址变化能快速生效。
 pub const SYNTHETIC_TTL: u32 = 60;
 const MAX_MESSAGE: usize = 512;
@@ -114,7 +119,12 @@ pub fn parse_question(message: &[u8]) -> Result<Question, DnsError> {
 ///
 /// 保留原查询 ID 与问题段，只写回地址记录，避免槽位侧解析器做额外解析。
 #[must_use]
-pub fn build_response(request: &[u8], question: &Question, answers: &[IpAddr], ttl: u32) -> Vec<u8> {
+pub fn build_response(
+    request: &[u8],
+    question: &Question,
+    answers: &[IpAddr],
+    ttl: u32,
+) -> Vec<u8> {
     let mut response = request.get(..12).map(<[u8]>::to_vec).unwrap_or_else(|| {
         let mut header = vec![0u8; 12];
         header[5] = 1;
@@ -132,10 +142,7 @@ pub fn build_response(request: &[u8], question: &Question, answers: &[IpAddr], t
     let mut trimmed = truncate_to_question(request, question);
     response.append(&mut trimmed);
     let mut written = 0_u16;
-    if let Some(answer_count) = u16::try_from(answers.len())
-        .ok()
-        .map(|count| count.min(8))
-    {
+    if let Some(answer_count) = u16::try_from(answers.len()).ok().map(|count| count.min(8)) {
         for address in answers.iter().take(usize::from(answer_count)) {
             let (kind, octets): (u16, &[u8]) = match address {
                 IpAddr::V4(v4) => (1, &v4.octets()),
@@ -245,7 +252,12 @@ mod tests {
     fn response_keeps_query_and_counts_answers() {
         let request = query("chatgpt.com", 1);
         let question = parse_question(&request).unwrap();
-        let response = build_response(&request, &question, &[IpAddr::V4(synthetic_address("chatgpt.com"))], SYNTHETIC_TTL);
+        let response = build_response(
+            &request,
+            &question,
+            &[IpAddr::V4(synthetic_address("chatgpt.com"))],
+            SYNTHETIC_TTL,
+        );
         assert_eq!(response[..2], request[..2]);
         assert_eq!(response[2] & 0x80, 0x80);
         assert_eq!(u16::from_be_bytes([response[6], response[7]]), 1);

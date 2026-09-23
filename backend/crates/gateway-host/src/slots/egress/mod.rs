@@ -18,8 +18,8 @@ pub use dns::{DnsError, Question, Resolution};
 pub use iptables::{CommandIptables, Iptables, IptablesError, forward_parent};
 pub use manager::SlotEgressManager;
 pub use net::{
-    BRIDGE_PREFIX, LISTEN_ADDR, SUBNET_POOL, bridge_name, gateway_of, parse_ipv4, parse_ipv4_subnet,
-    subnet_for,
+    BRIDGE_PREFIX, LISTEN_ADDR, SUBNET_POOL, bridge_name, gateway_of, parse_ipv4,
+    parse_ipv4_subnet, subnet_for,
 };
 pub use plan::{EgressTarget, ForwardParent, RedirectPorts, Rule, RulePlan};
 pub use sni::{HandshakeProgress, parse_client_hello, parse_http_host, sanitize_host};

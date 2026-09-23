@@ -121,10 +121,7 @@ impl SlotEgressManager {
     ///
     /// 入口未运行或 `iptables` 拒绝规则时返回错误。
     pub async fn apply_rules(&self, instance: AccountSlotInstanceId) -> Result<(), EgressError> {
-        let running = self
-            .running
-            .get(&instance)
-            .ok_or(EgressError::Ports)?;
+        let running = self.running.get(&instance).ok_or(EgressError::Ports)?;
         let mut target = self.target(instance);
         target.ports = running.ports;
         let chain = target.chain(instance);

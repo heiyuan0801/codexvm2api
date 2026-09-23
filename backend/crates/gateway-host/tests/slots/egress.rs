@@ -18,7 +18,9 @@ const NO_CONNECTION_WINDOW: Duration = Duration::from_millis(200);
 
 /// 建立一对已连接的本地 TCP：返回 (客户端, 服务端)；服务端交给被测代码。
 async fn pair() -> (TcpStream, TcpStream) {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind pair");
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind pair");
     let address = listener.local_addr().expect("pair addr");
     let client = TcpStream::connect(address).await.expect("connect pair");
     let (server, _) = listener.accept().await.expect("accept pair");
@@ -27,7 +29,9 @@ async fn pair() -> (TcpStream, TcpStream) {
 
 /// 桩 HTTP `CONNECT` 代理：记录请求头，按 `status` 应答，成功时回显后续字节。
 async fn spawn_http_proxy(status: u16) -> (SocketAddr, oneshot::Receiver<String>) {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind proxy");
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind proxy");
     let address = listener.local_addr().expect("proxy addr");
     let (sender, receiver) = oneshot::channel();
     tokio::spawn(async move {
@@ -52,7 +56,9 @@ async fn spawn_http_proxy(status: u16) -> (SocketAddr, oneshot::Receiver<String>
 
 /// 桩 SOCKS5 代理：无认证、接受任意目标，返回收到的连接请求原文。
 async fn spawn_socks5_proxy() -> (SocketAddr, oneshot::Receiver<Vec<u8>>) {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind proxy");
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind proxy");
     let address = listener.local_addr().expect("proxy addr");
     let (sender, receiver) = oneshot::channel();
     tokio::spawn(async move {
@@ -185,7 +191,10 @@ async fn assert_closed(client: &mut TcpStream) {
     let mut buffer = [0u8; 16];
     match client.read(&mut buffer).await {
         Ok(0) => {}
-        Ok(read) => panic!("槽位侧不应收到数据，却读到 {read} 字节: {:02x?}", &buffer[..read]),
+        Ok(read) => panic!(
+            "槽位侧不应收到数据，却读到 {read} 字节: {:02x?}",
+            &buffer[..read]
+        ),
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
         Err(error) => panic!("槽位侧应看到连接关闭，却读到 {error}"),
     }
@@ -198,9 +207,8 @@ async fn tls_flow_recovers_sni_and_relays_through_a_connect_proxy() {
         proxy: Some(proxy_url(&format!("http://{proxy}"))),
     };
     let (mut client, server) = pair().await;
-    let server_task = tokio::spawn(async move {
-        handle_connection(server, Protocol::Tls, 443, &config).await
-    });
+    let server_task =
+        tokio::spawn(async move { handle_connection(server, Protocol::Tls, 443, &config).await });
 
     let hello = client_hello("chatgpt.com");
     client.write_all(&hello).await.expect("write hello");
@@ -229,9 +237,8 @@ async fn http_flow_recovers_host_and_dials_the_entry_port() {
         proxy: Some(proxy_url(&format!("http://{proxy}"))),
     };
     let (mut client, server) = pair().await;
-    let server_task = tokio::spawn(async move {
-        handle_connection(server, Protocol::Http, 80, &config).await
-    });
+    let server_task =
+        tokio::spawn(async move { handle_connection(server, Protocol::Http, 80, &config).await });
 
     let request = b"GET /v1/models HTTP/1.1\r\nHost: api.example.com\r\n\r\n";
     client.write_all(request).await.expect("write request");
@@ -254,9 +261,8 @@ async fn socks5h_hands_the_hostname_to_the_proxy() {
         proxy: Some(proxy_url(&format!("socks5h://{proxy}"))),
     };
     let (mut client, server) = pair().await;
-    let server_task = tokio::spawn(async move {
-        handle_connection(server, Protocol::Tls, 443, &config).await
-    });
+    let server_task =
+        tokio::spawn(async move { handle_connection(server, Protocol::Tls, 443, &config).await });
 
     let hello = client_hello("chatgpt.com");
     client.write_all(&hello).await.expect("write hello");
@@ -285,9 +291,8 @@ async fn socks5_resolves_locally_and_sends_an_ipv4_literal() {
         proxy: Some(proxy_url(&format!("socks5://{proxy}"))),
     };
     let (mut client, server) = pair().await;
-    let server_task = tokio::spawn(async move {
-        handle_connection(server, Protocol::Http, 80, &config).await
-    });
+    let server_task =
+        tokio::spawn(async move { handle_connection(server, Protocol::Http, 80, &config).await });
 
     let request_line = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
     client.write_all(request_line).await.expect("write request");
@@ -310,7 +315,13 @@ async fn socks5_resolves_locally_and_sends_an_ipv4_literal() {
 async fn missing_proxy_closes_without_dialling() {
     let (mut client, server) = pair().await;
     let server_task = tokio::spawn(async move {
-        handle_connection(server, Protocol::Tls, 443, &SlotEgressConfig { proxy: None }).await
+        handle_connection(
+            server,
+            Protocol::Tls,
+            443,
+            &SlotEgressConfig { proxy: None },
+        )
+        .await
     });
 
     client
@@ -328,9 +339,8 @@ async fn unrecoverable_host_closes_and_never_reaches_the_proxy() {
         proxy: Some(proxy_url(&format!("http://{proxy}"))),
     };
     let (mut client, server) = pair().await;
-    let server_task = tokio::spawn(async move {
-        handle_connection(server, Protocol::Tls, 443, &config).await
-    });
+    let server_task =
+        tokio::spawn(async move { handle_connection(server, Protocol::Tls, 443, &config).await });
 
     client
         .write_all(&server_hello())
@@ -338,7 +348,9 @@ async fn unrecoverable_host_closes_and_never_reaches_the_proxy() {
         .expect("write server hello");
     assert_closed(&mut client).await;
     assert!(
-        tokio::time::timeout(NO_CONNECTION_WINDOW, seen).await.is_err(),
+        tokio::time::timeout(NO_CONNECTION_WINDOW, seen)
+            .await
+            .is_err(),
         "恢复不出主机时不得连出"
     );
     server_task.abort();
@@ -351,9 +363,8 @@ async fn proxy_rejection_closes_the_connection() {
         proxy: Some(proxy_url(&format!("http://{proxy}"))),
     };
     let (mut client, server) = pair().await;
-    let server_task = tokio::spawn(async move {
-        handle_connection(server, Protocol::Tls, 443, &config).await
-    });
+    let server_task =
+        tokio::spawn(async move { handle_connection(server, Protocol::Tls, 443, &config).await });
 
     client
         .write_all(&client_hello("chatgpt.com"))
@@ -374,9 +385,8 @@ async fn https_proxy_is_refused_before_any_connection_is_made() {
         proxy: Some(proxy_url(&format!("https://{address}"))),
     };
     let (mut client, server) = pair().await;
-    let server_task = tokio::spawn(async move {
-        handle_connection(server, Protocol::Tls, 443, &config).await
-    });
+    let server_task =
+        tokio::spawn(async move { handle_connection(server, Protocol::Tls, 443, &config).await });
 
     client
         .write_all(&client_hello("chatgpt.com"))

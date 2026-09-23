@@ -73,9 +73,7 @@ impl Iptables for CommandIptables {
 }
 
 /// 选择承载槽位转发的父链：优先 `DOCKER-USER`，缺失时回落到 `FORWARD` 首条。
-pub async fn forward_parent(
-    iptables: &dyn Iptables,
-) -> Result<ForwardParent, IptablesError> {
+pub async fn forward_parent(iptables: &dyn Iptables) -> Result<ForwardParent, IptablesError> {
     Ok(if iptables.chain_exists("filter", "DOCKER-USER").await? {
         ForwardParent::DockerUser
     } else {

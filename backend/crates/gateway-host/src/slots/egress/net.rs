@@ -42,7 +42,10 @@ pub(crate) fn hex_prefix(hash: u64, digits: usize) -> String {
 #[must_use]
 pub fn bridge_name(instance: impl std::fmt::Display) -> String {
     let raw = instance.to_string();
-    format!("{BRIDGE_PREFIX}{}", hex_prefix(instance_hash(&raw), BRIDGE_DIGITS))
+    format!(
+        "{BRIDGE_PREFIX}{}",
+        hex_prefix(instance_hash(&raw), BRIDGE_DIGITS)
+    )
 }
 
 /// 槽位网段池；每个槽位从中切出一个 `/24`。
@@ -127,9 +130,16 @@ mod tests {
         assert!(name.len() <= 15);
         assert_eq!(name.len(), BRIDGE_PREFIX.len() + BRIDGE_DIGITS);
         assert!(name.starts_with(|character: char| character.is_ascii_alphabetic()));
-        assert!(name[BRIDGE_PREFIX.len()..].chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(
+            name[BRIDGE_PREFIX.len()..]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit())
+        );
         // 同一实例重复推导必须得到同一接口名，规则才能幂等覆盖。
-        assert_eq!(name, bridge_name("slot_0199f4c8-52a8-7aa0-a6d7-f75219e82e3d"));
+        assert_eq!(
+            name,
+            bridge_name("slot_0199f4c8-52a8-7aa0-a6d7-f75219e82e3d")
+        );
     }
 
     #[test]
@@ -145,7 +155,10 @@ mod tests {
     #[test]
     fn subnet_is_stable_and_inside_the_pool() {
         let subnet = subnet_for("slot_0199f4c8-52a8-7aa0-a6d7-f75219e82e3d");
-        assert_eq!(subnet, subnet_for("slot_0199f4c8-52a8-7aa0-a6d7-f75219e82e3d"));
+        assert_eq!(
+            subnet,
+            subnet_for("slot_0199f4c8-52a8-7aa0-a6d7-f75219e82e3d")
+        );
         let (address, prefix) = parse_ipv4_subnet(&subnet).unwrap();
         assert_eq!(prefix, 24);
         assert_eq!(address.octets()[..2], SUBNET_POOL.octets()[..2]);
@@ -171,10 +184,7 @@ mod tests {
             gateway_of("172.29.0.0/16"),
             Some(Ipv4Addr::new(172, 29, 0, 1))
         );
-        assert_eq!(
-            gateway_of("10.8.4.0/24"),
-            Some(Ipv4Addr::new(10, 8, 4, 1))
-        );
+        assert_eq!(gateway_of("10.8.4.0/24"), Some(Ipv4Addr::new(10, 8, 4, 1)));
         assert_eq!(gateway_of("172.29.0.0"), None);
         assert_eq!(gateway_of("172.29.0.0/33"), None);
         assert_eq!(gateway_of("not-a-subnet"), None);

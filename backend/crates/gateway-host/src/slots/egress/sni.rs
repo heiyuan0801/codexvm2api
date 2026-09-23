@@ -126,9 +126,9 @@ pub fn sanitize_host(value: &str) -> Option<String> {
     if value.is_empty() || value.len() > MAX_HOST_LEN {
         return None;
     }
-    let valid = value.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':')
-    });
+    let valid = value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':'));
     if !valid || value.starts_with('.') || value.contains("..") {
         return None;
     }
@@ -281,7 +281,10 @@ mod tests {
         let hello = client_hello("chatgpt.com");
         // record(5) + handshake 头(4) + body(63)：body 里任何字段写宽了都会超长。
         assert_eq!(hello.len(), 72);
-        assert_eq!(u16::from_be_bytes([hello[3], hello[4]]) as usize, hello.len() - 5);
+        assert_eq!(
+            u16::from_be_bytes([hello[3], hello[4]]) as usize,
+            hello.len() - 5
+        );
     }
 
     #[test]
@@ -319,7 +322,10 @@ mod tests {
 
     #[test]
     fn rejects_unusable_hosts() {
-        assert_eq!(sanitize_host("ChatGPT.COM."), Some("chatgpt.com".to_owned()));
+        assert_eq!(
+            sanitize_host("ChatGPT.COM."),
+            Some("chatgpt.com".to_owned())
+        );
         assert_eq!(sanitize_host(""), None);
         assert_eq!(sanitize_host("a..b"), None);
         assert_eq!(sanitize_host("bad host"), None);

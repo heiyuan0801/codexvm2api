@@ -170,7 +170,15 @@ pub fn plan(target: &EgressTarget, chain: &str, parent: ForwardParent) -> RulePl
         filter(&["-A", chain, "-i", bridge, "-j", "DROP"]),
     ];
     let parent_chain = parent.chain();
-    apply.push(filter(&["-I", parent_chain, "1", "-i", bridge, "-j", chain]));
+    apply.push(filter(&[
+        "-I",
+        parent_chain,
+        "1",
+        "-i",
+        bridge,
+        "-j",
+        chain,
+    ]));
     let teardown = vec![
         nat(&["-D", "PREROUTING", "-i", bridge, "-j", chain]),
         filter(&["-D", parent_chain, "-i", bridge, "-j", chain]),
@@ -230,12 +238,24 @@ mod tests {
             .iter()
             .map(|rule| rule.0.join(" "))
             .collect::<Vec<_>>();
-        assert!(rendered.iter().any(|rule| rule.contains("--dport 53")
-            && rule.contains("REDIRECT --to-ports 41000")));
-        assert!(rendered.iter().any(|rule| rule.contains("--dport 443")
-            && rule.contains("REDIRECT --to-ports 41001")));
-        assert!(rendered.iter().any(|rule| rule.contains("--dport 80")
-            && rule.contains("REDIRECT --to-ports 41002")));
+        assert!(
+            rendered
+                .iter()
+                .any(|rule| rule.contains("--dport 53")
+                    && rule.contains("REDIRECT --to-ports 41000"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|rule| rule.contains("--dport 443")
+                    && rule.contains("REDIRECT --to-ports 41001"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|rule| rule.contains("--dport 80")
+                    && rule.contains("REDIRECT --to-ports 41002"))
+        );
         // 除 53/443/80 外的 TCP 必须落到 DROP：入口拿不回原始目的端口，
         // 放行只会按错误的端口连出。
         assert!(

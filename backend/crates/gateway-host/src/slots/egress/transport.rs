@@ -91,7 +91,11 @@ impl SlotEgress {
     /// 一直服务到配置通道关闭或收到取消信号。
     ///
     /// DNS 出口与被接管的名字无关，因此不参与配置热更新。
-    pub async fn serve(self, config: watch::Receiver<SlotEgressConfig>, cancelled: watch::Receiver<bool>) {
+    pub async fn serve(
+        self,
+        config: watch::Receiver<SlotEgressConfig>,
+        cancelled: watch::Receiver<bool>,
+    ) {
         let mut tls_cancel = cancelled.clone();
         let mut http_cancel = cancelled.clone();
         let mut dns_cancel = cancelled;
@@ -259,9 +263,12 @@ async fn answer_query(request: &[u8]) -> Option<Vec<u8>> {
         Err(DnsError::Malformed) => return None,
     };
     match dns::resolve(&question) {
-        dns::Resolution::Synthetic(addresses) => {
-            Some(dns::build_response(request, &question, &addresses, SYNTHETIC_TTL))
-        }
+        dns::Resolution::Synthetic(addresses) => Some(dns::build_response(
+            request,
+            &question,
+            &addresses,
+            SYNTHETIC_TTL,
+        )),
         dns::Resolution::Forward => match forward(request).await {
             Ok(response) => Some(response),
             Err(_) => Some(servfail(request)),
