@@ -141,7 +141,7 @@ impl SlotEgressManager {
     ///
     /// `iptables` 拒绝拆除时返回错误，删除意图得以保留以便重试。
     pub async fn remove(&mut self, instance: AccountSlotInstanceId) -> Result<(), EgressError> {
-        let Some(running) = self.running.remove(&instance) else {
+        let Some(running) = self.running.get(&instance) else {
             return Ok(());
         };
         // 先摘规则再停入口：入口还活着时端口不会被别的进程抢走，
@@ -153,6 +153,12 @@ impl SlotEgressManager {
         for rule in plan(&target, &chain, parent).teardown {
             self.iptables.run(&rule.0).await?;
         }
+        // 只有规则完整拆除后才从注册表移除句柄。若 iptables 在上面失败，
+        // 保留入口和端口让下一轮删除继续使用同一组规则，避免留下无法重试的孤儿链。
+        let running = self
+            .running
+            .remove(&instance)
+            .expect("running egress was checked above");
         let _ = running.cancelled.send(true);
         let _ = running.tasks.await;
         Ok(())

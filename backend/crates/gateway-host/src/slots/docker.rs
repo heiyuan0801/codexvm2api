@@ -2,14 +2,15 @@
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bollard::errors::Error as DockerError;
 use bollard::models::{
-    ContainerCreateBody, ContainerSummaryStateEnum, HostConfig, NetworkConnectRequest,
-    NetworkCreateRequest, NetworkDisconnectRequest, RestartPolicy, RestartPolicyNameEnum,
-    VolumeCreateRequest,
+    ContainerCreateBody, ContainerSummaryStateEnum, HostConfig, Ipam, IpamConfig,
+    NetworkConnectRequest, NetworkCreateRequest, NetworkDisconnectRequest, RestartPolicy,
+    RestartPolicyNameEnum, VolumeCreateRequest,
 };
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, DownloadFromContainerOptionsBuilder,
@@ -27,6 +28,7 @@ use uuid::Uuid;
 
 use crate::config::OpenAiSlotsConfig;
 
+use super::egress::{CommandIptables, ManagedSlotEgress, SlotEgressLifecycle, net};
 use super::{
     AccountSlotEngine, AccountSlotEngineError, AccountSlotEngineErrorKind, AccountSlotHealth,
     AccountSlotRuntimeState, ConvergedAccountSlot, DesiredAccountSlot,
@@ -48,6 +50,7 @@ pub struct BollardAccountSlotEngine {
     config: OpenAiSlotsConfig,
     gateway_container: String,
     health_client: reqwest::Client,
+    egress: Arc<dyn SlotEgressLifecycle>,
 }
 
 impl std::fmt::Debug for BollardAccountSlotEngine {
@@ -71,6 +74,16 @@ impl BollardAccountSlotEngine {
         config: OpenAiSlotsConfig,
         gateway_container: impl Into<String>,
     ) -> Result<Self, AccountSlotEngineError> {
+        let egress = Arc::new(ManagedSlotEgress::new(Arc::new(CommandIptables)));
+        Self::connect_with_egress(config, gateway_container, egress)
+    }
+
+    /// 使用调用方提供的出网控制器连接 Docker；用于没有 Linux 网桥的集成测试。
+    pub fn connect_with_egress(
+        config: OpenAiSlotsConfig,
+        gateway_container: impl Into<String>,
+        egress: Arc<dyn SlotEgressLifecycle>,
+    ) -> Result<Self, AccountSlotEngineError> {
         let gateway_container = gateway_container.into();
         if gateway_container.trim().is_empty() {
             return Err(engine_error(AccountSlotEngineErrorKind::InvalidState));
@@ -92,6 +105,7 @@ impl BollardAccountSlotEngine {
             config,
             gateway_container,
             health_client,
+            egress,
         })
     }
 
@@ -129,8 +143,19 @@ impl BollardAccountSlotEngine {
                     .create_network(NetworkCreateRequest {
                         name: names.network.clone(),
                         driver: Some("bridge".to_owned()),
-                        internal: Some(false),
+                        internal: Some(true),
                         attachable: Some(false),
+                        options: Some(HashMap::from([(
+                            "com.docker.network.bridge.name".to_owned(),
+                            net::bridge_name(instance_id),
+                        )])),
+                        ipam: Some(Ipam {
+                            config: Some(vec![IpamConfig {
+                                subnet: Some(net::subnet_for(instance_id)),
+                                ..Default::default()
+                            }]),
+                            ..Default::default()
+                        }),
                         labels: Some(base_labels(instance_id)),
                         ..Default::default()
                     })
@@ -147,6 +172,7 @@ impl BollardAccountSlotEngine {
             network.labels.as_ref().unwrap_or(&HashMap::new()),
             instance_id,
         )?;
+        verify_network_config(&network, instance_id)?;
 
         let gateway_attached = network.containers.as_ref().is_some_and(|containers| {
             let gateway = self.gateway_container.trim_start_matches('/');
@@ -365,6 +391,7 @@ impl AccountSlotEngine for BollardAccountSlotEngine {
                     network.labels.as_ref().unwrap_or(&HashMap::new()),
                     instance_id,
                 )?;
+                verify_network_config(&network, instance_id)?;
                 Some(network)
             }
             Err(error) if is_not_found(&error) => None,
@@ -396,6 +423,11 @@ impl AccountSlotEngine for BollardAccountSlotEngine {
                 }
             }
         }
+        // 所有资源归属和端点检查都通过后，先拆除出网规则，再移除容器与网桥。
+        self.egress
+            .remove(instance_id)
+            .await
+            .map_err(map_egress_error)?;
         self.remove_owned_container(&names, instance_id).await?;
         if network.is_some() {
             if let Some(gateway) = gateway_id {
@@ -488,6 +520,14 @@ impl AccountSlotEngine for BollardAccountSlotEngine {
         let names = SlotResourceNames::new(desired.instance_id);
         self.ensure_volume(&names, desired.instance_id).await?;
         self.ensure_network(&names, desired.instance_id).await?;
+        self.egress
+            .ensure(desired.instance_id, &desired.outbound_proxy)
+            .await
+            .map_err(map_egress_error)?;
+        self.egress
+            .apply_rules(desired.instance_id)
+            .await
+            .map_err(map_egress_error)?;
 
         let existing = self
             .inspect_owned_container(&names, desired.instance_id)
@@ -616,6 +656,37 @@ fn verify_resource_labels(
         || labels.get(INSTANCE_LABEL) != Some(&instance_id.to_string())
     {
         return Err(engine_error(AccountSlotEngineErrorKind::Unauthorized));
+    }
+    Ok(())
+}
+
+fn verify_network_config(
+    network: &bollard::models::NetworkInspect,
+    instance_id: AccountSlotInstanceId,
+) -> Result<(), AccountSlotEngineError> {
+    let expected_bridge = net::bridge_name(instance_id);
+    let expected_subnet = net::subnet_for(instance_id);
+    let bridge_matches = network
+        .options
+        .as_ref()
+        .and_then(|options| options.get("com.docker.network.bridge.name"))
+        .map(String::as_str)
+        == Some(expected_bridge.as_str());
+    let subnet_matches = network
+        .ipam
+        .as_ref()
+        .and_then(|ipam| ipam.config.as_ref())
+        .is_some_and(|configs| {
+            configs
+                .iter()
+                .any(|config| config.subnet.as_deref() == Some(expected_subnet.as_str()))
+        });
+    if network.driver.as_deref() != Some("bridge")
+        || network.internal != Some(true)
+        || !bridge_matches
+        || !subnet_matches
+    {
+        return Err(engine_error(AccountSlotEngineErrorKind::InvalidState));
     }
     Ok(())
 }
@@ -772,6 +843,10 @@ fn map_docker_error(error: DockerError) -> AccountSlotEngineError {
         } => engine_error(AccountSlotEngineErrorKind::InvalidState),
         _ => engine_error(AccountSlotEngineErrorKind::Unavailable),
     }
+}
+
+fn map_egress_error(_: super::egress::EgressError) -> AccountSlotEngineError {
+    engine_error(AccountSlotEngineErrorKind::Unavailable)
 }
 
 const fn engine_error(kind: AccountSlotEngineErrorKind) -> AccountSlotEngineError {

@@ -1,13 +1,16 @@
 use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use gateway_core::account::{AccountSlotInstanceId, OutboundProxy};
 use gateway_host::config::OpenAiSlotsConfig;
 use gateway_host::slots::{
     AccountSlotEngine, AccountSlotEngineErrorKind, BollardAccountSlotEngine,
+    egress::{EgressError, SlotEgressLifecycle},
 };
 use serde_json::{Value, json};
 
@@ -17,40 +20,58 @@ const SUFFIX: &str = "0199f4c852a87aa0a6d7f75219e82e3d";
 struct DockerCapture {
     requests: Vec<(Method, String, Vec<u8>)>,
     foreign_volume: bool,
+    network_missing: bool,
+    events: Arc<Mutex<Vec<String>>>,
 }
 
 struct DockerFixture {
     engine: BollardAccountSlotEngine,
     capture: Arc<Mutex<DockerCapture>>,
+    events: Arc<Mutex<Vec<String>>>,
     server: tokio::task::JoinHandle<()>,
     _directory: tempfile::TempDir,
 }
 
 impl DockerFixture {
     async fn start(foreign_volume: bool) -> Self {
+        Self::start_with_options(foreign_volume, false).await
+    }
+
+    async fn start_with_network_missing(foreign_volume: bool) -> Self {
+        Self::start_with_options(foreign_volume, true).await
+    }
+
+    async fn start_with_options(foreign_volume: bool, network_missing: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("docker.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let capture = Arc::new(Mutex::new(DockerCapture {
             foreign_volume,
+            network_missing,
+            events: Arc::new(Mutex::new(Vec::new())),
             ..DockerCapture::default()
         }));
+        let events = capture.lock().unwrap().events.clone();
         let router = axum::Router::new()
             .fallback(docker_request)
             .with_state(capture.clone());
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        let engine = BollardAccountSlotEngine::connect(
+        let engine = BollardAccountSlotEngine::connect_with_egress(
             OpenAiSlotsConfig {
                 enabled: true,
                 docker_endpoint: format!("unix://{}", socket.display()),
                 ..OpenAiSlotsConfig::default()
             },
             "0123456789ab",
+            Arc::new(FakeEgress {
+                events: Arc::clone(&events),
+            }),
         )
         .unwrap();
         Self {
             engine,
             capture,
+            events,
             server,
             _directory: directory,
         }
@@ -70,12 +91,24 @@ async fn docker_request(
     let method = request.method().clone();
     let uri = request.uri().to_string();
     let body = to_bytes(request.into_body(), 1024 * 1024).await.unwrap();
-    let foreign_volume = {
+    let (foreign_volume, network_missing) = {
         let mut capture = state.lock().unwrap();
         capture
             .requests
             .push((method.clone(), uri.clone(), body.to_vec()));
-        capture.foreign_volume
+        capture
+            .events
+            .lock()
+            .unwrap()
+            .push(format!("docker {method} {uri}"));
+        let network_missing = capture.network_missing
+            && method == Method::GET
+            && uri.contains("/networks/")
+            && !uri.contains("/networks/create");
+        if network_missing {
+            capture.network_missing = false;
+        }
+        (capture.foreign_volume, network_missing)
     };
     let labels = json!({
         "io.codex-proxy-rs.owner": "openai-account-slot",
@@ -91,10 +124,20 @@ async fn docker_request(
             StatusCode::OK,
             json!({"Name": format!("cpr-slot-{SUFFIX}-data"), "Driver": "local", "Mountpoint": "/data", "Labels": labels, "Scope": "local", "Options": {}}),
         )
+    } else if method == Method::POST && uri.contains("/networks/create") {
+        (
+            StatusCode::CREATED,
+            json!({"Id": "fake-network", "Warning": ""}),
+        )
+    } else if uri.contains("/networks/") && network_missing {
+        (
+            StatusCode::NOT_FOUND,
+            json!({"message": "network not found"}),
+        )
     } else if uri.contains("/networks/") {
         (
             StatusCode::OK,
-            json!({"Name": format!("cpr-slot-{SUFFIX}-net"), "Labels": labels, "Containers": {"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123": {"Name": "gateway-test"}}}),
+            json!({"Name": format!("cpr-slot-{SUFFIX}-net"), "Driver": "bridge", "Internal": true, "Attachable": false, "Options": {"com.docker.network.bridge.name": gateway_host::slots::egress::bridge_name("slot_0199f4c8-52a8-7aa0-a6d7-f75219e82e3d")}, "IPAM": {"Config": [{"Subnet": gateway_host::slots::egress::subnet_for("slot_0199f4c8-52a8-7aa0-a6d7-f75219e82e3d")}]}, "Labels": labels, "Containers": {"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123": {"Name": "gateway-test"}}}),
         )
     } else if uri.contains("/containers/create") {
         (
@@ -118,6 +161,32 @@ async fn docker_request(
         .into_response()
 }
 
+struct FakeEgress {
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl SlotEgressLifecycle for FakeEgress {
+    async fn ensure(
+        &self,
+        _instance: AccountSlotInstanceId,
+        _proxy: &OutboundProxy,
+    ) -> Result<(), EgressError> {
+        self.events.lock().unwrap().push("egress ensure".to_owned());
+        Ok(())
+    }
+
+    async fn apply_rules(&self, _instance: AccountSlotInstanceId) -> Result<(), EgressError> {
+        self.events.lock().unwrap().push("egress apply".to_owned());
+        Ok(())
+    }
+
+    async fn remove(&self, _instance: AccountSlotInstanceId) -> Result<(), EgressError> {
+        self.events.lock().unwrap().push("egress remove".to_owned());
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn docker_creation_uses_instance_names_and_private_secret_files() {
     let fixture = DockerFixture::start(false).await;
@@ -127,6 +196,20 @@ async fn docker_creation_uses_instance_names_and_private_secret_files() {
         AccountSlotEngineErrorKind::Unavailable
     );
     let capture = fixture.capture.lock().unwrap();
+    let events = fixture.events.lock().unwrap();
+    let ensure = events
+        .iter()
+        .position(|event| event == "egress ensure")
+        .unwrap();
+    let apply = events
+        .iter()
+        .position(|event| event == "egress apply")
+        .unwrap();
+    let create = events
+        .iter()
+        .position(|event| event.contains("/containers/create"))
+        .unwrap();
+    assert!(ensure < apply && apply < create);
     assert!(
         capture
             .requests
@@ -175,6 +258,33 @@ async fn docker_creation_uses_instance_names_and_private_secret_files() {
     assert_eq!(
         secrets["var/lib/cpr-slot/secrets/proxy"],
         b"socks5://user:pass@127.0.0.1:1080"
+    );
+}
+
+#[tokio::test]
+async fn docker_network_creation_pins_bridge_subnet_and_internal_mode() {
+    let fixture = DockerFixture::start_with_network_missing(false).await;
+    let desired = super::desired("acct_test", "0199f4c8-52a8-7aa0-a6d7-f75219e82e3d");
+    assert_eq!(
+        fixture.engine.converge(&desired).await.unwrap_err().kind,
+        AccountSlotEngineErrorKind::Unavailable
+    );
+    let capture = fixture.capture.lock().unwrap();
+    let (_, uri, body) = capture
+        .requests
+        .iter()
+        .find(|(method, uri, _)| *method == Method::POST && uri.contains("/networks/create"))
+        .unwrap();
+    assert!(uri.contains("/networks/create"));
+    let config: Value = serde_json::from_slice(body).unwrap();
+    assert_eq!(
+        config["Options"]["com.docker.network.bridge.name"],
+        gateway_host::slots::egress::bridge_name(desired.instance_id)
+    );
+    assert_eq!(config["Internal"], true);
+    assert_eq!(
+        config["IPAM"]["Config"][0]["Subnet"],
+        gateway_host::slots::egress::subnet_for(desired.instance_id)
     );
 }
 

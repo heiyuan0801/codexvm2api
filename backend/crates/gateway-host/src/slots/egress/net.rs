@@ -1,6 +1,6 @@
 //! 槽位桥接网络的地址推导；不依赖 Docker 类型，便于单独测试。
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 
 /// Linux 接口名上限 15 字节，且首字符必须是字母。
 pub const BRIDGE_PREFIX: &str = "cpr";
@@ -113,12 +113,6 @@ pub fn gateway_of(subnet: &str) -> Option<Ipv4Addr> {
     let gateway = network.checked_add(1)?;
     (u32::from(address) & mask == network && prefix <= 30).then_some(Ipv4Addr::from(gateway))
 }
-
-/// 转发监听地址：覆盖全部 IPv4 接口。
-///
-/// 重定向由 `iptables` REDIRECT 完成，只有桥接口上的流量会被送达这里，
-/// 因此无需绑定具体网卡地址。
-pub const LISTEN_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
 #[cfg(test)]
 mod tests {

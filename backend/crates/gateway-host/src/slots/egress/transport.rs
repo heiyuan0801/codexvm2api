@@ -295,7 +295,7 @@ fn servfail(request: &[u8]) -> Vec<u8> {
     if response.len() < 12 {
         return vec![0, 0, 0x80, 0x02, 0, 0, 0, 0, 0, 0, 0, 0];
     }
-    response[2] = response[2] | 0x80;
+    response[2] |= 0x80;
     response[3] = (response[3] & 0xF0) | 0x02;
     response[6] = 0;
     response[7] = 0;

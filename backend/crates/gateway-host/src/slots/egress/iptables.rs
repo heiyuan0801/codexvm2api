@@ -58,11 +58,8 @@ impl Iptables for CommandIptables {
             chain.to_owned(),
         ];
         let exists = Self::execute(args).await;
-        match exists {
-            // 链不存在时 iptables 以非零码退出，这里不区分具体原因，交给后续 -N 处理。
-            Ok(found) => Ok(found),
-            Err(error) => Err(error),
-        }
+        // 链不存在时 iptables 以非零码退出，这里不区分具体原因，交给后续 -N 处理。
+        exists
     }
 
     async fn run(&self, args: &[String]) -> Result<(), IptablesError> {

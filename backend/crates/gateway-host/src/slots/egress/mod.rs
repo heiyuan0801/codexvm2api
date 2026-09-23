@@ -13,17 +13,81 @@ pub mod plan;
 pub mod sni;
 pub mod transport;
 
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use gateway_core::account::{AccountSlotInstanceId, OutboundProxy};
+use tokio::sync::Mutex;
+
 pub use dial::{DialError, DialTarget, connect_via, relay};
 pub use dns::{DnsError, Question, Resolution};
 pub use iptables::{CommandIptables, Iptables, IptablesError, forward_parent};
 pub use manager::SlotEgressManager;
 pub use net::{
-    BRIDGE_PREFIX, LISTEN_ADDR, SUBNET_POOL, bridge_name, gateway_of, parse_ipv4,
-    parse_ipv4_subnet, subnet_for,
+    BRIDGE_PREFIX, SUBNET_POOL, bridge_name, gateway_of, parse_ipv4, parse_ipv4_subnet, subnet_for,
 };
 pub use plan::{EgressTarget, ForwardParent, RedirectPorts, Rule, RulePlan};
 pub use sni::{HandshakeProgress, parse_client_hello, parse_http_host, sanitize_host};
 pub use transport::{Protocol, SlotEgress, SlotEgressConfig, handle_connection};
+
+/// 容器生命周期所需的出网操作。
+///
+/// 生产实现持有一个 [`SlotEgressManager`]，测试实现可以替换端口监听和
+/// `iptables`，从而在没有 Linux 网桥的环境中仍能验证 Docker 操作顺序。
+#[async_trait]
+pub trait SlotEgressLifecycle: Send + Sync {
+    async fn ensure(
+        &self,
+        instance: AccountSlotInstanceId,
+        proxy: &OutboundProxy,
+    ) -> Result<(), EgressError>;
+
+    async fn apply_rules(&self, instance: AccountSlotInstanceId) -> Result<(), EgressError>;
+
+    async fn remove(&self, instance: AccountSlotInstanceId) -> Result<(), EgressError>;
+}
+
+/// `SlotEgressManager` 的并发适配器；Docker 引擎的生命周期方法只持有 `&self`。
+pub struct ManagedSlotEgress {
+    manager: Mutex<SlotEgressManager>,
+}
+
+impl std::fmt::Debug for ManagedSlotEgress {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedSlotEgress")
+            .field("manager", &self.manager)
+            .finish()
+    }
+}
+
+impl ManagedSlotEgress {
+    #[must_use]
+    pub fn new(iptables: Arc<dyn Iptables>) -> Self {
+        Self {
+            manager: Mutex::new(SlotEgressManager::new(iptables)),
+        }
+    }
+}
+
+#[async_trait]
+impl SlotEgressLifecycle for ManagedSlotEgress {
+    async fn ensure(
+        &self,
+        instance: AccountSlotInstanceId,
+        proxy: &OutboundProxy,
+    ) -> Result<(), EgressError> {
+        self.manager.lock().await.ensure(instance, proxy).await
+    }
+
+    async fn apply_rules(&self, instance: AccountSlotInstanceId) -> Result<(), EgressError> {
+        self.manager.lock().await.apply_rules(instance).await
+    }
+
+    async fn remove(&self, instance: AccountSlotInstanceId) -> Result<(), EgressError> {
+        self.manager.lock().await.remove(instance).await
+    }
+}
 
 use thiserror::Error;
 

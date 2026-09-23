@@ -1,9 +1,9 @@
 # OpenAI 账号独立槽位：出网模块现状与下一步
 
-> 状态：**进行中（未完成）**。出网模块本身已实现并通过测试，但尚未接到 Docker 引擎上，
-> 因此对账链路目前仍不会真正启用它。
+> 状态：**进行中（P0 接线已完成）**。出网模块已经接到 Docker 引擎：网络身份会被固定并校验，
+> 规则在容器创建/启动前应用，删除时先拆规则再拆网络。剩余工作是启动清理、观测和 Linux + Docker 真机验收。
 >
-> 基线：`codex/continue-account-slots` @ `bb754146`
+> 基线：`codex/continue-account-slots` @ `7ddc0ed3`（P0 接线在该提交工作树上继续）
 > 编制日期：2026-09-23
 
 ---
@@ -201,45 +201,33 @@ backend/crates/gateway-host/src/slots/
 | gateway-core | `AccountSlotInstanceId` / `OutboundProxy` / `AccountSlotRoute` 等 | ✅ 完成 |
 | gateway-store | 槽位读写与 CAS 更新、级联删除 | ✅ 完成 |
 | gateway-host 对账 | 引擎 trait、对账器、注册表、周期任务、Docker 适配器 | ✅ 完成 |
-| **gateway-host 出网** | **egress 全部子模块 + manager** | ⚠️ **已实现，未接线** |
-| gateway-admin / api | 槽位管理用例与 Admin 路由 | ✅ 基本完成（未逐项核对） |
-| gateway-providers/openai | Slot Transport（任务 5） | ❌ 未开始 |
-| frontend | 槽位开关与状态标签（任务 7） | ❌ 未开始 |
-| deploy | sidecar 镜像、compose、验证脚本（任务 8） | ❌ 未开始 |
+| **gateway-host 出网** | **egress 全部子模块 + manager + Docker 生命周期接线** | ✅ P0 完成 |
+| gateway-admin / api | 槽位管理用例与 Admin 路由 | ✅ 已实现 |
+| gateway-providers/openai | Slot Transport（任务 5） | ✅ 已实现 |
+| frontend | 槽位开关与状态标签（任务 7） | ✅ 已实现 |
+| deploy | sidecar 镜像、compose、验证脚本（任务 8） | ✅ 已实现，待 Linux 验收 |
 
 ### 3.3 当前构建与测试状态
 
-```text
-cargo check -p gateway-host --all-targets   → 通过（exit 0）
-cargo test  -p gateway-host                 → 120 passed; 2 failed; 1 ignored
-```
-
-两个失败均在出网模块之外，且都是 Windows 环境问题，与本次改动无关：
-
-1. `logging::writer::retention_preserves_complete_dates_across_compression_rotation_and_restart`
-   — `Os { code: 5, kind: PermissionDenied }`，Windows 文件占用语义；
-2. `system_update::restart_should_spawn_replacement_before_shutdown_outside_docker`
-   — `os error 193`（`%1 不是有效的 Win32 应用程序`），在非容器环境无法复现重启。
+本次接线后的验证以 `+1.97.0` 工具链运行：`cargo check -p gateway-host --all-targets --locked` 通过，
+Docker 生命周期测试 `cargo test -p gateway-host --test main slots::docker --locked` 为 4 passed。
+完整 workspace 测试和 Linux + Docker 真机验证仍是提交前检查项。
 
 ### 3.4 未完成的部分（本模块）
 
-**`SlotEgressManager` 已写好但没有任何调用方。** 具体缺口：
+P0 接线前的缺口已完成。当前实现要点如下：
 
-1. `docker.rs::ensure_network` 仍用 `NetworkCreateRequest { ..Default::default() }` 建网络：
-   - 没有 `options`（`com.docker.network.bridge.name`），于是 Docker 会把宿主接口命名为
-     `br-<network_id 前 12 位>`。**而 `plan()` 的规则按 `-i cpr<hash>` 匹配，规则永远不会命中。**
-     这是把计划接进引擎的**阻塞点**。
-   - 没有 `ipam`（子网），于是 `net::subnet_for` 推导的 `-d <subnet> RETURN` 规则指向一个不存在的网段。
-   - `internal: Some(false)`，意味着在网络创建到规则下发之间的窗口里槽位可以直连出网。
+1. `docker.rs::ensure_network` 创建网络时显式设置 `com.docker.network.bridge.name`、派生 IPAM `/24` 和
+   `internal: true`，复用前校验 owner、driver、bridge、IPAM 和 internal，不匹配直接 fail closed。
 
-2. `BollardAccountSlotEngine` 没有 `SlotEgressManager` 字段，`converge` / `delete` 里没有任何
-   `ensure` / `apply_rules` / `remove` 调用。
+2. `BollardAccountSlotEngine` 持有可注入的 `SlotEgressLifecycle`；生产连接使用
+   `ManagedSlotEgress(Arc<CommandIptables>)`，测试可以替换端口和规则执行器。
 
-3. `tests/slots/docker.rs` 的假 Docker API 返回的网络没有 `Options`/`IPAM`，
-   且 `docker_rejects_foreign_resources_before_mutation` 断言"恰好一个请求"——
-   接线后这些断言会失效，需要同步更新。目前也**没有任何 `Iptables` 的测试替身**。
+3. `converge` 顺序固定为 volume → network → egress ensure → egress apply → create/start container；
+   `delete` 在移除容器和网络前拆除 egress，`stop` 不会拆除入口。
 
-4. `net::LISTEN_ADDR` 已被"绑定网关地址"取代，现在是死代码，`warnings = "deny"` 会报出来。
+4. Docker 假 API 返回完整网络身份，测试替身记录并断言规则阶段先于容器创建；已删除无调用方的
+   `net::LISTEN_ADDR`。
 
 ---
 
@@ -263,33 +251,33 @@ cargo test  -p gateway-host                 → 120 passed; 2 failed; 1 ignored
 
 按依赖顺序排列，每步都可独立验证。
 
-### P0 — 接通出网（阻塞其余全部工作）
+### P0 — 接通出网（已完成）
 
-1. **`ensure_network` 显式钉住网络身份**
+1. **`ensure_network` 显式钉住网络身份** ✅
    - `options: { "com.docker.network.bridge.name": egress::bridge_name(instance) }`
    - `ipam: { config: [{ subnet: egress::subnet_for(instance) }] }`
    - `internal: Some(true)`——即便规则尚未下发，槽位也没有直连路径
    - 从 `NetworkInspect` 读回 `options` / `ipam` 并**校验**，不匹配则 fail closed
      （`NetworkInspect` 已确认同时暴露 `ipam` 与 `options` 字段，可以真校验而非仅凭推测）
 
-2. **`BollardAccountSlotEngine` 持有 `SlotEgressManager`**
+2. **`BollardAccountSlotEngine` 持有 `SlotEgressManager`** ✅
    - `connect` 里用 `Arc::new(CommandIptables)` 构造
-   - 结构体因此不再是 `Copy`（原本也不是），`Debug` 增加 `slots` 字段
+   - 通过 `SlotEgressLifecycle` 保持并发安全，`Debug` 不输出代理或凭证
 
 3. **`converge` 的顺序**：`ensure_volume` → `ensure_network` → `egress.ensure` → `egress.apply_rules`
    → 之后才创建/启动容器。**容器不能先于规则存在**，否则启动瞬间是裸奔的。
 
-4. **`delete` 的顺序**：`egress.remove` **先于** `remove_network`。
+4. **`delete` 的顺序**：`egress.remove` **先于** `remove_network`。 ✅
    网桥不存在时 `-i <bridge>` 匹配的规则会因缺少接口而删除失败，留下悬空跳转。
 
-5. **`stop` 保留入口**：容器 `UNLESS_STOPPED` 会自动重启，入口必须活着。
+5. **`stop` 保留入口**：容器 `UNLESS_STOPPED` 会自动重启，入口必须活着。 ✅
 
-6. **测试**：
+6. **测试**： ✅
    - 假 Docker API 补齐 `Options` / `IPAM` 返回，并更新请求计数断言；
-   - 新增假的 `Iptables` 实现，断言**规则下发发生在 `create_container` 之前**、`delete` 时
-     规则拆除发生在 `remove_network` 之前——这是纯顺序保证，值得单独锁住。
+   - 注入假的 egress lifecycle，断言**规则阶段发生在 `create_container` 之前**；生产实现仍使用
+     `CommandIptables`，Linux 真机验收再覆盖 `delete` 到 `remove_network` 的顺序。
 
-7. `net::LISTEN_ADDR` 删除或显式保留（`warnings = "deny"` 会拦截死代码）。
+7. `net::LISTEN_ADDR` 已删除。 ✅
 
 ### P1 — 补上可观测性与运维安全
 
@@ -297,11 +285,11 @@ cargo test  -p gateway-host                 → 120 passed; 2 failed; 1 ignored
 - 启动时清理**上一进程遗留**的 `CPR-*` 链：进程崩溃不会回滚内核规则，重启后这些跳转仍在，
   指向已经不存在的监听端口。
 
-### P2 — 按原计划推进其余任务
+### P2 — 其余任务（代码已完成，待环境验收）
 
-- 任务 5：OpenAI Provider 的 Slot Transport（这是"账号真正走槽位"的最后一段）；
-- 任务 6/7：Admin 与前端（后端已有 `admin/accounts/slots.rs`，需核对完成度）；
-- 任务 8：sidecar 镜像构建、compose、双槽位验证脚本。
+- 任务 5：OpenAI Provider 的 Slot Transport 已接入；
+- 任务 6/7：Admin、API 与前端槽位状态已接入；
+- 任务 8：sidecar 镜像、compose 和验证脚本已加入，待 Linux + Docker 双槽位验收。
 
 ### P3 — 已知的技术债
 
@@ -328,12 +316,13 @@ cargo fmt --check
 cargo test -p gateway-host --test main slots::egress
 ```
 
-接线完成后，`tests/slots/docker.rs` 需要新增的断言：
+当前 Docker 测试已覆盖：
 
 - `create_container` 之前已下发全部 `CPR-*` 规则；
-- 网络创建请求带 `com.docker.network.bridge.name` 与推导出的子网，且 `internal == true`；
-- `delete` 时规则拆除早于 `remove_network`；
-- 网络读回的网桥名/子网与推导不符时 `converge` 返回错误且不启动容器。
+- 网络读回会校验网桥名、推导子网和 `internal == true`；
+- 外部资源在任何写操作前返回 `Unauthorized`。
+
+Linux + Docker 验收还需补充网络创建请求字段和 `delete` 时规则拆除早于 `remove_network` 的端到端断言。
 
 ---
 
