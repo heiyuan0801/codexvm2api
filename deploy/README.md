@@ -506,14 +506,20 @@ API Key 账号不支持启用独立槽位，其他推理端点会拒绝执行
 构建 sidecar 并应用显式扩展：
 
 ```bash
-export CPR_DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
 export CPR_SLOT_IMAGE=codex-slot-sidecar:local
 export CPR_IMAGE=codex-proxy-rs:slots-local
 docker compose -f deploy/compose.yaml -f deploy/compose.slots.yaml --profile slot-build build codex-proxy-rs slot-sidecar
 docker compose -f deploy/compose.yaml -f deploy/compose.slots.yaml up -d codex-proxy-rs
 ```
 
-Docker Desktop 可按 VM 内 socket 的组权限设置 `CPR_DOCKER_GID`，常见值为 `0`
+槽位扩展会把网关切换到宿主网络，并授予 `NET_ADMIN`/`NET_RAW`，以便在宿主网络命名空间
+安装每个槽位独立的 `iptables` 出网规则；因此只应在可信的单实例 Linux Docker Engine 上启用。
+该扩展会以 root 网关进程运行；`NET_ADMIN`/`NET_RAW` 对非 root 的 `cpr` UID 不会进入有效能力集，
+否则规则安装会返回 permission denied。挂载 Docker socket 与 root 网络能力等同宿主管理权限，
+必须把启用槽位的网关部署在专用、可信的单实例主机。
+基础网关镜像已内置 `iptables` 客户端。宿主机需要启用 iptables 兼容接口（包括 nftables
+兼容模式），并允许 Docker bridge 转发；Docker Desktop 的 Linux VM 不提供宿主机网络命名空间，
+只能运行基础 Compose，不能完成真实槽位出网验收。
 扩展用 `CPR_OPENAI_SLOTS_ENABLED=true` 和 `CPR_OPENAI_SLOTS_IMAGE` 覆盖配置文件
 其余限额、超时与对账周期见 `config.example.yaml` 的 `host.openai_slots`
 生产环境应将构建镜像推送到受控仓库，并把 `CPR_SLOT_IMAGE` 固定为实际镜像 digest

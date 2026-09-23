@@ -220,9 +220,10 @@ Docker 生命周期测试 `cargo test -p gateway-host --test main slots::docker 
 bearer 鉴权、凭据不转发、密钥文件权限、inspect/日志脱敏、容器重建和代理故障隔离；
 `verify-account-slot-host.py` 的真实 Docker 生命周期测试 1 passed。
 
-将 `compose.slots.yaml` 直接叠加到 macOS Docker Desktop 时，网关槽位对账会因无法访问宿主网络命名空间的
-`iptables` 而保持不健康。这是 Docker Desktop 网络能力限制；完整出网规则和宿主网桥仍需在 Linux + Docker
-环境中验收。基础无槽位 Compose 不受影响。
+`compose.slots.yaml` 现在会把网关放入宿主网络、安装 `iptables` 并授予必要能力；Linux Docker Engine 上还会
+跳过 host-network 网关无法连接槽位 bridge 的 Docker API 操作。macOS Docker Desktop 的 host 网络只存在于
+内部 Linux VM，宿主 macOS 无法通过 `127.0.0.1:8080` 访问该网关，因此槽位扩展仍需 Linux Docker 主机做最终
+出网验收。基础无槽位 Compose 和本地原生 18080 服务不受影响。
 
 ### 3.4 未完成的部分（本模块）
 
@@ -309,8 +310,8 @@ P0 接线前的缺口已完成。当前实现要点如下：
 
 - `172.24.0.0/16` 硬编码，无配置项；宿主若已占用会冲突；
 - 非标端口（如 `8443`）无法访问；
-- `Iptables::run` 刻意忽略退出码，重复 `-I` 可能累积跳转。当前靠"先 `-F` 再 `-I`"缓解，
-  但没有断言**跳转本身**只有一条；
+- `Iptables::run` 现在会检查退出码，仅对链创建的明确 `already exists` 错误做幂等豁免；
+  后续仍可补充对实际规则跳转数量的运行时断言；
 - `https` 代理不支持（需要引入 TLS 客户端）。
 
 ---

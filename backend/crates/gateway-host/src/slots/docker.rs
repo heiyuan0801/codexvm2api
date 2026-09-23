@@ -187,7 +187,8 @@ impl BollardAccountSlotEngine {
             })
         });
         if !gateway_attached {
-            self.docker
+            let connect = self
+                .docker
                 .connect_network(
                     &names.network,
                     NetworkConnectRequest {
@@ -195,8 +196,23 @@ impl BollardAccountSlotEngine {
                         endpoint_config: None,
                     },
                 )
-                .await
-                .map_err(map_docker_error)?;
+                .await;
+            match connect {
+                Ok(()) => {}
+                // A host-network gateway already shares the Docker Engine host
+                // namespace and cannot be attached to a user-defined bridge.
+                // Its host namespace can still reach the slot bridge directly,
+                // so treating this specific Docker response as success keeps
+                // the egress rules and sidecar endpoint usable.
+                Err(error) if is_host_network_connect_error(&error) => {
+                    tracing::debug!(
+                        network = %names.network,
+                        gateway = %self.gateway_container,
+                        "host-network gateway does not attach to slot bridge"
+                    );
+                }
+                Err(error) => return Err(map_docker_error(error)),
+            }
         }
         Ok(())
     }
@@ -850,6 +866,20 @@ fn is_not_found(error: &DockerError) -> bool {
     )
 }
 
+fn is_host_network_connect_error(error: &DockerError) -> bool {
+    let DockerError::DockerResponseServerError {
+        status_code: 400,
+        message,
+    } = error
+    else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    message.contains("sharing network namespace")
+        && message.contains("cannot be connected")
+        && message.contains("host")
+}
+
 fn map_docker_error(error: DockerError) -> AccountSlotEngineError {
     match error {
         DockerError::DockerResponseServerError {
@@ -870,4 +900,27 @@ fn map_egress_error(_: super::egress::EgressError) -> AccountSlotEngineError {
 
 const fn engine_error(kind: AccountSlotEngineErrorKind) -> AccountSlotEngineError {
     AccountSlotEngineError { kind }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DockerError, is_host_network_connect_error};
+
+    #[test]
+    fn recognizes_host_network_attach_conflict() {
+        let error = DockerError::DockerResponseServerError {
+            status_code: 400,
+            message: "container sharing network namespace with another container or host cannot be connected to any other network".to_owned(),
+        };
+        assert!(is_host_network_connect_error(&error));
+    }
+
+    #[test]
+    fn does_not_hide_other_network_errors() {
+        let error = DockerError::DockerResponseServerError {
+            status_code: 400,
+            message: "network is not attachable".to_owned(),
+        };
+        assert!(!is_host_network_connect_error(&error));
+    }
 }

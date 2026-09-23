@@ -52,24 +52,9 @@ impl CommandIptables {
         .map_err(|_| IptablesError::Unavailable)
     }
 
-    async fn execute(args: Vec<String>) -> Result<bool, IptablesError> {
-        let status = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("iptables")
-                .arg("-w")
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-        })
-        .await
-        .map_err(|_| IptablesError::Unavailable)?
-        .map_err(|_| IptablesError::Unavailable)?;
-        Ok(status.success())
-    }
-
     async fn run_checked(args: Vec<String>) -> Result<(), IptablesError> {
-        if Self::execute(args).await? {
+        let output = Self::execute_output(args).await?;
+        if output.status.success() {
             Ok(())
         } else {
             Err(IptablesError::Rejected)
@@ -152,6 +137,31 @@ fn is_managed_chain(chain: &str) -> bool {
     suffix.len() == 12 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn stderr_contains(stderr: &[u8], fragments: &[&str]) -> bool {
+    let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    fragments.iter().all(|fragment| text.contains(fragment))
+}
+
+fn is_missing_chain_error(stderr: &[u8]) -> bool {
+    stderr_contains(stderr, &["chain"])
+        && (["not found", "does not exist", "no chain", "unknown chain"])
+            .iter()
+            .any(|fragment| stderr_contains(stderr, &[fragment]))
+}
+
+fn is_chain_create(args: &[String]) -> bool {
+    args.windows(2)
+        .any(|window| window[0] == "-N" && !window[1].is_empty())
+}
+
+fn is_existing_chain_error(args: &[String], stderr: &[u8]) -> bool {
+    is_chain_create(args)
+        && stderr_contains(stderr, &["chain"])
+        && (["already exists", "file exists", "exists"])
+            .iter()
+            .any(|fragment| stderr_contains(stderr, &[fragment]))
+}
+
 #[async_trait]
 impl Iptables for CommandIptables {
     async fn chain_exists(&self, table: &str, chain: &str) -> Result<bool, IptablesError> {
@@ -161,15 +171,26 @@ impl Iptables for CommandIptables {
             "-S".to_owned(),
             chain.to_owned(),
         ];
-        let exists = Self::execute(args).await;
-        // 链不存在时 iptables 以非零码退出，这里不区分具体原因，交给后续 -N 处理。
-        exists
+        let output = Self::execute_output(args).await?;
+        if output.status.success() {
+            return Ok(true);
+        }
+        // 只有明确的“链不存在”才回退到 FORWARD；权限、锁或表不可用必须中止，
+        // 否则网关会把一个没有任何出网规则的槽位误判成可收敛。
+        if is_missing_chain_error(&output.stderr) {
+            Ok(false)
+        } else {
+            Err(IptablesError::Rejected)
+        }
     }
 
     async fn run(&self, args: &[String]) -> Result<(), IptablesError> {
-        // 幂等重建允许 "链已存在" 这类失败：调用方已经先 flush。
-        let _ = Self::execute(args.to_vec()).await?;
-        Ok(())
+        let output = Self::execute_output(args.to_vec()).await?;
+        if output.status.success() || is_existing_chain_error(args, &output.stderr) {
+            // 幂等重建允许 "链已存在" 这类失败：调用方随后会 flush。
+            return Ok(());
+        }
+        Err(IptablesError::Rejected)
     }
 
     async fn cleanup_stale_chains(&self) -> Result<usize, IptablesError> {
@@ -190,7 +211,9 @@ pub async fn forward_parent(iptables: &dyn Iptables) -> Result<ForwardParent, Ip
 
 #[cfg(test)]
 mod tests {
-    use super::is_managed_chain;
+    use super::{
+        is_chain_create, is_existing_chain_error, is_managed_chain, is_missing_chain_error,
+    };
 
     #[test]
     fn stale_cleanup_only_accepts_cpr_chain_names() {
@@ -199,5 +222,50 @@ mod tests {
         assert!(!is_managed_chain("CPR-0123456789abC"));
         assert!(!is_managed_chain("DOCKER-USER"));
         assert!(!is_managed_chain("CPR-0123456789az"));
+    }
+
+    #[test]
+    fn only_missing_chain_errors_fall_back_to_forward() {
+        assert!(is_missing_chain_error(
+            b"iptables: chain DOCKER-USER does not exist"
+        ));
+        assert!(is_missing_chain_error(
+            b"iptables: No chain/target/match by that name."
+        ));
+        assert!(!is_missing_chain_error(
+            b"iptables: Permission denied (you must be root)"
+        ));
+        assert!(!is_missing_chain_error(
+            b"iptables: Resource temporarily unavailable"
+        ));
+    }
+
+    #[test]
+    fn only_chain_creation_allows_existing_chain_error() {
+        let create = vec![
+            "-t".to_owned(),
+            "nat".to_owned(),
+            "-N".to_owned(),
+            "CPR-a".to_owned(),
+        ];
+        let append = vec![
+            "-t".to_owned(),
+            "nat".to_owned(),
+            "-A".to_owned(),
+            "CPR-a".to_owned(),
+        ];
+        assert!(is_chain_create(&create));
+        assert!(is_existing_chain_error(
+            &create,
+            b"Chain 'CPR-a' already exists."
+        ));
+        assert!(!is_existing_chain_error(
+            &append,
+            b"Chain 'CPR-a' already exists."
+        ));
+        assert!(!is_existing_chain_error(
+            &create,
+            b"iptables: Permission denied"
+        ));
     }
 }
