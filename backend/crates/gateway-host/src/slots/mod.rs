@@ -2,6 +2,7 @@
 
 mod bundle;
 mod docker;
+pub mod egress;
 mod model;
 mod ports;
 mod reconciler;

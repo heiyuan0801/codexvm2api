@@ -1,5 +1,6 @@
 #[cfg(unix)]
 mod docker;
+mod egress;
 mod live;
 mod source;
 mod worker;
