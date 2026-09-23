@@ -2,9 +2,10 @@
 
 > 状态：**进行中（P0 完成，P1 大部分完成）**。出网模块已经接到 Docker 引擎：网络身份会被固定并校验，
 > 规则在容器创建/启动前应用，删除时先拆规则再拆网络；首轮对账会清理遗留用户链并记录结构化日志。
-> 剩余工作是指标后端接入和 Linux + Docker 真机验收。
+> 本地 Docker Desktop 已完成基础部署、sidecar 隔离和容器生命周期验证；剩余工作是指标后端接入和 Linux + Docker
+> 宿主网络命名空间真机验收。
 >
-> 基线：`codex/continue-account-slots` @ `9beb57d6`（P1 出网生命周期、遗留链清理与结构化日志已接入）
+> 基线：`codex/continue-account-slots` @ `de07e8b3`（本地 Docker 验证与 Host 测试镜像修复已提交）
 > 编制日期：2026-09-23
 
 ---
@@ -212,7 +213,16 @@ backend/crates/gateway-host/src/slots/
 
 本次接线后的验证以 `+1.97.0` 工具链运行：`cargo check -p gateway-host --all-targets --locked` 通过，
 Docker 生命周期测试 `cargo test -p gateway-host --test main slots::docker --locked` 为 4 passed。
-完整 `gateway-host` 测试以 `--test-threads=1` 运行：126 passed、1 ignored；Linux + Docker 真机验证仍待执行。
+完整 `gateway-host` 测试以 `--test-threads=1` 运行：126 passed、1 ignored。
+
+本地 Docker Desktop 验证结果：默认 Compose 的 PostgreSQL、Redis 均为 healthy，当前源码网关镜像的 `/healthz`
+返回 204、首页返回 200；`verify-account-slots.py` 的双槽位隔离检查通过，覆盖资源与身份隔离、独立代理出口、
+bearer 鉴权、凭据不转发、密钥文件权限、inspect/日志脱敏、容器重建和代理故障隔离；
+`verify-account-slot-host.py` 的真实 Docker 生命周期测试 1 passed。
+
+将 `compose.slots.yaml` 直接叠加到 macOS Docker Desktop 时，网关槽位对账会因无法访问宿主网络命名空间的
+`iptables` 而保持不健康。这是 Docker Desktop 网络能力限制；完整出网规则和宿主网桥仍需在 Linux + Docker
+环境中验收。基础无槽位 Compose 不受影响。
 
 ### 3.4 未完成的部分（本模块）
 
@@ -291,8 +301,9 @@ P0 接线前的缺口已完成。当前实现要点如下：
 
 - 任务 5：OpenAI Provider 的 Slot Transport 已接入；
 - 任务 6/7：Admin、API 与前端槽位状态已接入；
-- 任务 8：sidecar 镜像、compose 和验证脚本已加入；Host 验收脚本已补齐 `iptables`、宿主网络
-  命名空间和 `NET_ADMIN`/`NET_RAW` 能力，待 Linux + Docker 双槽位验收。
+- 任务 8：sidecar 镜像、compose 和验证脚本已加入；本地 Docker Desktop 已通过 sidecar 隔离与 Host
+  生命周期测试，Host 验收脚本已补齐 `iptables`、宿主网络命名空间和 `NET_ADMIN`/`NET_RAW` 能力，待 Linux +
+  Docker 双槽位出网验收。
 
 ### P3 — 已知的技术债
 
@@ -325,6 +336,15 @@ cargo test -p gateway-host --test main slots::egress
 - 网络读回会校验网桥名、推导子网和 `internal == true`；
 - 外部资源在任何写操作前返回 `Unauthorized`。
 
+本地 Docker 验证脚本：
+
+```bash
+CPR_SLOT_IMAGE=codex-slot-sidecar:local python3 deploy/tests/verify-account-slots.py
+CPR_SLOT_IMAGE=codex-slot-sidecar:local \
+CPR_SLOT_HOST_TEST_IMAGE=codex-slot-host-tests:local \
+python3 deploy/tests/verify-account-slot-host.py
+```
+
 Linux + Docker 验收还需补充网络创建请求字段和 `delete` 时规则拆除早于 `remove_network` 的端到端断言。
 
 ---
@@ -338,3 +358,4 @@ Linux + Docker 验收还需补充网络创建请求字段和 `delete` 时规则�
 | 宿主已占用 `172.24.x.x` | 网络创建失败，槽位无法启动 | 记录为已知限制；后续做成配置项 |
 | 进程崩溃遗留 `CPR-*` 链 | 重启后规则指向已消失的监听端口 | P1 的启动清理；Linux 真机仍需验收清理顺序 |
 | 非容器环境无法验证 | Windows 上只能验证纯逻辑与假引擎 | 集成验证必须放到 Linux + Docker 环境 |
+| Docker Desktop 无宿主网络命名空间 | macOS 叠加槽位 Compose 时 iptables 对账失败 | 使用 Linux Docker 主机完成宿主网桥和出网规则验收；基础 Compose 可正常运行 |
