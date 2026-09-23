@@ -4,7 +4,7 @@
 > 规则在容器创建/启动前应用，删除时先拆规则再拆网络；首轮对账会清理遗留用户链并记录结构化日志。
 > 剩余工作是指标后端接入和 Linux + Docker 真机验收。
 >
-> 基线：`codex/continue-account-slots` @ `e297c353`（P1 在该提交工作树上继续）
+> 基线：`codex/continue-account-slots` @ `9beb57d6`（P1 出网生命周期、遗留链清理与结构化日志已接入）
 > 编制日期：2026-09-23
 
 ---
@@ -291,7 +291,8 @@ P0 接线前的缺口已完成。当前实现要点如下：
 
 - 任务 5：OpenAI Provider 的 Slot Transport 已接入；
 - 任务 6/7：Admin、API 与前端槽位状态已接入；
-- 任务 8：sidecar 镜像、compose 和验证脚本已加入，待 Linux + Docker 双槽位验收。
+- 任务 8：sidecar 镜像、compose 和验证脚本已加入；Host 验收脚本已补齐 `iptables`、宿主网络
+  命名空间和 `NET_ADMIN`/`NET_RAW` 能力，待 Linux + Docker 双槽位验收。
 
 ### P3 — 已知的技术债
 
@@ -335,5 +336,5 @@ Linux + Docker 验收还需补充网络创建请求字段和 `delete` 时规则�
 | 网桥名未钉住，规则永不命中 | 槽位直连出网，隔离失效 | P0-1；`internal: true` 作为第二道防线 |
 | `internal: true` 与网关容器共存 | 网关自己也在该网络上，需要能访问 sidecar | 已验证网桥内部互通不受 `internal` 影响；需在真机验证 |
 | 宿主已占用 `172.24.x.x` | 网络创建失败，槽位无法启动 | 记录为已知限制；后续做成配置项 |
-| 进程崩溃遗留 `CPR-*` 链 | 重启后规则指向已消失的监听端口 | P1 的启动清理 |
+| 进程崩溃遗留 `CPR-*` 链 | 重启后规则指向已消失的监听端口 | P1 的启动清理；Linux 真机仍需验收清理顺序 |
 | 非容器环境无法验证 | Windows 上只能验证纯逻辑与假引擎 | 集成验证必须放到 Linux + Docker 环境 |

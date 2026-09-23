@@ -11,8 +11,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/backend/target \
     cargo test --locked -p gateway-host --test main --no-run \
     && find target/debug/deps -maxdepth 1 -name 'main-*' -type f -executable -exec cp '{}' /tmp/slot-host-tests \;
-FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83c5ad96c815348e28ed7da68e2e3687004faa906251
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates iptables \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /tmp/slot-host-tests /usr/local/bin/slot-host-tests
 ENTRYPOINT ["/usr/local/bin/slot-host-tests", "slots::live::real_docker_slot_lifecycle", "--ignored", "--exact", "--nocapture"]

@@ -554,6 +554,13 @@ docker build -f deploy/tests/Dockerfile.slot-host -t codex-slot-host-tests:local
 python3 deploy/tests/verify-account-slot-host.py
 ```
 
-Host 测试在临时网关容器中挂载 Docker socket，只操作随机生成的两个测试实例
+Host 测试容器使用宿主网络命名空间，并要求 `NET_ADMIN`、`NET_RAW` 能力；镜像内置
+`iptables`，这样 `CommandIptables`、槽位网桥网关监听和 Docker daemon 创建的网桥处于同一
+Linux 网络命名空间。脚本另起一个普通 bridge 容器作为待挂载的 gateway endpoint，测试进程
+通过容器 IP 访问 sidecar，避免 host 网络容器无法加入 user-defined bridge 的限制。该验收只支持
+Linux Docker Engine；Docker Desktop 的 daemon 位于独立 Linux VM 时，需在该 VM 或 Linux 主机内执行，
+不能把 macOS/Windows 宿主网络当作等价环境。测试容器挂载 Docker socket，只操作随机生成的两个
+测试实例。若 socket 不可用，先启动 Docker Engine，再重新执行构建和脚本；不要把 `--privileged`
+作为生产 Compose 配置。
 普通 Rust 回归显式忽略此用例，由上述脚本独立运行
 Admin 存储测试还需按迁移说明设置 `CPR_TEST_DATABASE_URL`，未设置环境的跳过不算数据库验证通过

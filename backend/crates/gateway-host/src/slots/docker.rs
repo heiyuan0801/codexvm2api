@@ -339,10 +339,9 @@ impl BollardAccountSlotEngine {
 
     async fn wait_until_ready(
         &self,
-        names: &SlotResourceNames,
+        endpoint: &reqwest::Url,
         token: &AccountSlotBearerToken,
     ) -> Result<bool, AccountSlotEngineError> {
-        let endpoint = slot_endpoint(names)?;
         let ready_url = endpoint
             .join("/readyz")
             .map_err(|_| engine_error(AccountSlotEngineErrorKind::InvalidState))?;
@@ -365,6 +364,28 @@ impl BollardAccountSlotEngine {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         Ok(false)
+    }
+
+    async fn slot_endpoint(
+        &self,
+        names: &SlotResourceNames,
+    ) -> Result<reqwest::Url, AccountSlotEngineError> {
+        let inspect = self
+            .docker
+            .inspect_container(&names.container, None)
+            .await
+            .map_err(map_docker_error)?;
+        let address = inspect
+            .network_settings
+            .and_then(|settings| settings.networks)
+            .and_then(|networks| networks.get(&names.network).cloned())
+            .and_then(|endpoint| endpoint.ip_address)
+            .filter(|address| !address.is_empty())
+            .ok_or_else(|| engine_error(AccountSlotEngineErrorKind::Unavailable))?;
+        reqwest::Url::parse(&format!(
+            "http://{address}:{SIDECAR_PORT}/internal/v1/forward"
+        ))
+        .map_err(|_| engine_error(AccountSlotEngineErrorKind::InvalidState))
     }
 }
 
@@ -579,7 +600,8 @@ impl AccountSlotEngine for BollardAccountSlotEngine {
                 .await
                 .map_err(map_docker_error)?;
         }
-        let ready = self.wait_until_ready(&names, &token).await?;
+        let endpoint = self.slot_endpoint(&names).await?;
+        let ready = self.wait_until_ready(&endpoint, &token).await?;
         let state = if ready {
             AccountSlotRuntimeState::Ready
         } else {
@@ -593,7 +615,7 @@ impl AccountSlotEngine for BollardAccountSlotEngine {
                 reason: (!ready).then_some("sidecar readiness check failed"),
             },
             route: if ready {
-                Some(AccountSlotRoute::new(slot_endpoint(&names)?, token))
+                Some(AccountSlotRoute::new(endpoint, token))
             } else {
                 None
             },
@@ -723,14 +745,6 @@ fn health_from_labels(
         },
         reason: None,
     })
-}
-
-fn slot_endpoint(names: &SlotResourceNames) -> Result<reqwest::Url, AccountSlotEngineError> {
-    reqwest::Url::parse(&format!(
-        "http://{}:{SIDECAR_PORT}/internal/v1/forward",
-        names.container
-    ))
-    .map_err(|_| engine_error(AccountSlotEngineErrorKind::InvalidState))
 }
 
 fn generate_token() -> Vec<u8> {

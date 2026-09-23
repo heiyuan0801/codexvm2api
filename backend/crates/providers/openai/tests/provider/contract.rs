@@ -9724,6 +9724,20 @@ impl SlotFixture {
 
 #[async_trait::async_trait]
 impl gateway_core::account::ProviderAccountSlotStore for SlotFixture {
+    async fn pending_slot_deletions(
+        &self,
+    ) -> Result<Vec<gateway_core::account::AccountSlotInstanceId>, gateway_core::error::StoreError>
+    {
+        Ok(Vec::new())
+    }
+
+    async fn complete_slot_deletion(
+        &self,
+        _id: gateway_core::account::AccountSlotInstanceId,
+    ) -> Result<(), gateway_core::error::StoreError> {
+        Ok(())
+    }
+
     async fn get_account_slot(
         &self,
         account_id: &ProviderAccountId,
