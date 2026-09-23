@@ -135,6 +135,17 @@ impl SlotEgressManager {
         target.ports = running.ports;
         let chain = target.chain(instance);
         let parent = forward_parent(self.iptables.as_ref()).await?;
+        // `-I` is used below so the jump wins over Docker's own rules. Remove
+        // every stale copy first; repeated reconciliation must not accumulate
+        // identical jumps in the parent chains.
+        let teardown = plan(&target, &chain, parent).teardown;
+        for rule in teardown.iter().take(2) {
+            for _ in 0..64 {
+                if self.iptables.run(&rule.0).await.is_err() {
+                    break;
+                }
+            }
+        }
         for rule in plan(&target, &chain, parent).apply {
             self.iptables.run(&rule.0).await?;
         }

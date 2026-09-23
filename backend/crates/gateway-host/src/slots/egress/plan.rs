@@ -99,7 +99,9 @@ fn filter(args: &[&str]) -> Rule {
 ///
 /// `nat/PREROUTING` 在 `-i <bridge>` 上跳到槽位链：到本网段的流量 RETURN，
 /// UDP 53 重定向到内建解析器，TCP 443 重定向到 TLS 分流器，
-/// TCP 80 重定向到 HTTP 分流器，最后 `DROP` 兜底。
+/// TCP 80 重定向到 HTTP 分流器。未命中的流量留在槽位链中，随后由
+/// `filter/DOCKER-USER` 的同名链丢弃；`nat` 表不能可靠地接受 `DROP`
+///（nftables 兼容层会拒绝该规则）。
 /// `filter` 在 `DOCKER-USER`（或 `FORWARD`）上跳到槽位链：只允许网关自身取回流量，
 /// 槽位容器之间的转发一律丢弃。
 ///
@@ -155,8 +157,6 @@ pub fn plan(target: &EgressTarget, chain: &str, parent: ForwardParent) -> RulePl
             "--to-ports",
             &http,
         ]),
-        // ICMP 等无法恢复原始目的地址的流量没有安全出口，直接丢弃。
-        nat(&["-A", chain, "-j", "DROP"]),
         // 槽位桥上的入向流量必须在 PREROUTING 最前面被接管，否则会先被 Docker 的
         // DNAT 规则改写，槽位就失去了唯一的出网路径。
         nat(&["-I", "PREROUTING", "1", "-i", bridge, "-j", chain]),
