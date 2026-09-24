@@ -18,6 +18,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/lib/cpr-slot/secrets /var/lib/cpr-slot/home
 COPY --from=builder /tmp/codex-slot-sidecar /usr/local/bin/codex-slot-sidecar
-ENV HOME=/var/lib/cpr-slot/home
+ENV HOME=/var/lib/cpr-slot/home \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
 EXPOSE 8090
 ENTRYPOINT ["/usr/local/bin/codex-slot-sidecar"]

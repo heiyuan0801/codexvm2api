@@ -9,6 +9,7 @@ export interface OutboundProxyTest {
   exitIp: string | null
   exitIpv4: string | null
   exitIpv6: string | null
+  location: RequestLocation | null
   message: string
 }
 

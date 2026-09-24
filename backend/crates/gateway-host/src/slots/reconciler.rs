@@ -107,6 +107,7 @@ impl AccountSlotReconciler {
                     generation: slot.generation,
                     state: AccountSlotRuntimeState::Degraded,
                     reason: Some("slot reconciliation failed"),
+                    egress: None,
                 },
             };
             container_states.insert(slot.instance_id, health.state);

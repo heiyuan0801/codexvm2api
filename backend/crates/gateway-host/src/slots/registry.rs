@@ -3,7 +3,8 @@
 use super::{AccountSlotHealth, AccountSlotRuntimeState};
 use gateway_admin::ports::account_slots::AccountSlotControl;
 use gateway_core::account::{
-    AccountSlotRoute, AccountSlotRuntime, AccountSlotState, ProviderAccountId, ProviderAccountSlot,
+    AccountSlotEgress, AccountSlotRoute, AccountSlotRuntime, AccountSlotState, ProviderAccountId,
+    ProviderAccountSlot,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::RwLock;
@@ -111,6 +112,20 @@ impl AccountSlotRuntime for AccountSlotRegistry {
             .routes
             .get(account_id)
             .cloned()
+    }
+
+    fn egress_for_slot(&self, slot: &ProviderAccountSlot) -> Option<AccountSlotEgress> {
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .observations
+            .get(slot.account_id())
+            .filter(|health| {
+                health.instance_id == slot.instance_id() && health.generation == slot.generation()
+            })
+            .and_then(|health| health.egress.clone())
     }
 
     fn route_for_slot(&self, slot: &ProviderAccountSlot) -> Option<AccountSlotRoute> {

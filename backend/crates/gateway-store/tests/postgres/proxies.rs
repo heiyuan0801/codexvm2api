@@ -163,6 +163,7 @@ fn success() -> ProxyTestResult {
         exit_ip: Some("203.0.113.5".parse().unwrap()),
         exit_ipv4: Some("203.0.113.5".parse().unwrap()),
         exit_ipv6: None,
+        location: None,
         message: "Connected".to_owned(),
     }
 }

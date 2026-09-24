@@ -22,6 +22,7 @@ enum ProbeStrategy {
 pub struct HttpProxyProbe {
     strategy: ProbeStrategy,
     build_client: Arc<ProxyClientBuilder>,
+    location_endpoint: Option<String>,
 }
 
 type ProxyClientBuilder =
@@ -34,6 +35,7 @@ impl Default for HttpProxyProbe {
             "https://api.ipify.org?format=json",
             "https://api6.ipify.org?format=json",
         )
+        .with_location_endpoint("http://ip-api.com/json")
     }
 }
 
@@ -43,6 +45,7 @@ impl HttpProxyProbe {
         Self {
             strategy: ProbeStrategy::Single(endpoint.into()),
             build_client: Arc::new(|builder| builder.build().map_err(|_| "无法创建代理连接")),
+            location_endpoint: None,
         }
     }
 
@@ -54,7 +57,15 @@ impl HttpProxyProbe {
                 ipv6_endpoint: ipv6_endpoint.into(),
             },
             build_client: Arc::new(|builder| builder.build().map_err(|_| "无法创建代理连接")),
+            location_endpoint: None,
         }
+    }
+
+    /// 为生产探测启用基于真实出口 IP 的位置查询；位置查询失败不会让代理测试失败。
+    #[must_use]
+    pub fn with_location_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.location_endpoint = Some(endpoint.into());
+        self
     }
 
     /// 由组合根注入与 Provider 请求一致的证书信任策略。
@@ -114,6 +125,75 @@ impl HttpProxyProbe {
             .map(|response| response.ip)
             .map_err(|_| "出口检测响应不合法")
     }
+
+    async fn location_at(&self, ip: IpAddr) -> Option<gateway_core::account::RequestLocation> {
+        let endpoint = self.location_endpoint.as_ref()?;
+        if is_reserved_probe_ip(ip) {
+            return None;
+        }
+        let url = format!("{}/{}", endpoint.trim_end_matches('/'), ip);
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .ok()?;
+        let response = client.get(&url).send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        #[derive(Deserialize)]
+        struct LocationResponse {
+            status: Option<String>,
+            success: Option<bool>,
+            #[serde(alias = "countryCode")]
+            country_code: Option<String>,
+            region: Option<String>,
+            #[serde(rename = "regionName")]
+            region_name: Option<String>,
+            city: Option<String>,
+            timezone: Option<serde_json::Value>,
+        }
+        let payload = response.json::<LocationResponse>().await.ok()?;
+        if payload.success == Some(false) || payload.status.as_deref() == Some("fail") {
+            return None;
+        }
+        let timezone = match payload.timezone? {
+            serde_json::Value::String(value) => value,
+            serde_json::Value::Object(value) => value.get("id")?.as_str()?.to_owned(),
+            _ => return None,
+        };
+        let location = gateway_core::account::RequestLocation {
+            country: payload.country_code?.to_ascii_uppercase(),
+            region: payload.region.or(payload.region_name)?,
+            city: payload.city?,
+            timezone: timezone.parse().ok()?,
+        };
+        location.normalized().ok()
+    }
+}
+
+fn is_reserved_probe_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(value) => {
+            value.is_private()
+                || value.is_loopback()
+                || value.is_link_local()
+                || value.is_unspecified()
+                || value.is_multicast()
+                || value.octets()[0] == 0
+                || matches!(
+                    value.octets(),
+                    [192, 0, 2, _] | [198, 51, 100, _] | [203, 0, 113, _]
+                )
+        }
+        IpAddr::V6(value) => {
+            value.is_loopback()
+                || value.is_unspecified()
+                || value.is_multicast()
+                || value.segments()[0] == 0x2001 && value.segments()[1] == 0x0db8
+        }
+    }
 }
 
 #[async_trait]
@@ -131,6 +211,7 @@ impl ProxyProbe for HttpProxyProbe {
 
                 match result {
                     Ok(ip) => {
+                        let location = self.location_at(ip).await;
                         let (exit_ipv4, exit_ipv6) = match ip {
                             IpAddr::V4(v4) => (Some(v4), None),
                             IpAddr::V6(v6) => (None, Some(v6)),
@@ -141,6 +222,7 @@ impl ProxyProbe for HttpProxyProbe {
                             exit_ip: Some(ip),
                             exit_ipv4,
                             exit_ipv6,
+                            location,
                             message: "连接成功".to_owned(),
                         }
                     }
@@ -150,6 +232,7 @@ impl ProxyProbe for HttpProxyProbe {
                         exit_ip: None,
                         exit_ipv4: None,
                         exit_ipv6: None,
+                        location: None,
                         message: err.to_owned(),
                     },
                 }
@@ -177,6 +260,14 @@ impl ProxyProbe for HttpProxyProbe {
                             Ok(IpAddr::V6(v6)) => Some(v6),
                             _ => None,
                         };
+                        let location = exit_ipv4
+                            .map(IpAddr::V4)
+                            .or_else(|| exit_ipv6.map(IpAddr::V6))
+                            .map(|ip| self.location_at(ip));
+                        let location = match location {
+                            Some(future) => future.await,
+                            None => None,
+                        };
 
                         if exit_ipv4.is_some() && exit_ipv6.is_some() {
                             ProxyTestResult {
@@ -185,6 +276,7 @@ impl ProxyProbe for HttpProxyProbe {
                                 exit_ip: exit_ipv4.map(IpAddr::V4),
                                 exit_ipv4,
                                 exit_ipv6,
+                                location,
                                 message: "连接成功（双栈可用）".to_owned(),
                             }
                         } else if let Some(v4) = exit_ipv4 {
@@ -194,6 +286,7 @@ impl ProxyProbe for HttpProxyProbe {
                                 exit_ip: Some(IpAddr::V4(v4)),
                                 exit_ipv4: Some(v4),
                                 exit_ipv6: None,
+                                location,
                                 message: "连接成功（仅 IPv4）".to_owned(),
                             }
                         } else if let Some(v6) = exit_ipv6 {
@@ -203,6 +296,7 @@ impl ProxyProbe for HttpProxyProbe {
                                 exit_ip: Some(IpAddr::V6(v6)),
                                 exit_ipv4: None,
                                 exit_ipv6: Some(v6),
+                                location,
                                 message: "连接成功（仅 IPv6）".to_owned(),
                             }
                         } else {
@@ -217,6 +311,7 @@ impl ProxyProbe for HttpProxyProbe {
                                 exit_ip: None,
                                 exit_ipv4: None,
                                 exit_ipv6: None,
+                                location: None,
                                 message,
                             }
                         }
@@ -227,6 +322,7 @@ impl ProxyProbe for HttpProxyProbe {
                         exit_ip: None,
                         exit_ipv4: None,
                         exit_ipv6: None,
+                        location: None,
                         message: "代理连接超时".to_owned(),
                     },
                 }

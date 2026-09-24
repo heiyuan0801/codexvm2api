@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::error::StoreError;
 use crate::validation::IdentifierError;
 
-use super::ProviderAccountId;
+use super::{ProviderAccountId, RequestLocation};
 
 /// 不包含账号信息、可安全用于 Docker 资源命名的稳定槽位 ID。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,6 +83,30 @@ pub struct AccountSlotIdentity {
     machine_id: String,
     installation_id: String,
     timezone: String,
+}
+
+/// 由槽位 sidecar 经绑定代理检测得到的非敏感出口信息。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountSlotEgress {
+    ip: std::net::IpAddr,
+    location: Option<RequestLocation>,
+}
+
+impl AccountSlotEgress {
+    #[must_use]
+    pub const fn new(ip: std::net::IpAddr, location: Option<RequestLocation>) -> Self {
+        Self { ip, location }
+    }
+
+    #[must_use]
+    pub const fn ip(&self) -> std::net::IpAddr {
+        self.ip
+    }
+
+    #[must_use]
+    pub const fn location(&self) -> Option<&RequestLocation> {
+        self.location.as_ref()
+    }
 }
 
 impl AccountSlotIdentity {
@@ -309,6 +333,11 @@ pub trait AccountSlotRuntime: Send + Sync {
     }
 
     fn route(&self, account_id: &ProviderAccountId) -> Option<AccountSlotRoute>;
+
+    /// 返回最近一次由 sidecar 在容器内部检测到的出口；缺失表示尚未完成检测。
+    fn egress_for_slot(&self, _slot: &ProviderAccountSlot) -> Option<AccountSlotEgress> {
+        None
+    }
 }
 
 fn valid_hostname(value: &str) -> bool {

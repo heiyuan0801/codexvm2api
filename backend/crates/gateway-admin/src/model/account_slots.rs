@@ -45,6 +45,10 @@ pub struct ContainerSlot {
     pub account_enabled: bool,
     pub proxy_id: Option<String>,
     pub proxy_name: Option<String>,
+    /// 上一次代理检测得到的非敏感出口位置。
+    pub proxy_location: Option<gateway_core::account::RequestLocation>,
+    pub proxy_exit_ip: Option<std::net::IpAddr>,
+    pub proxy_tested_at: Option<chrono::DateTime<chrono::Utc>>,
     pub running: bool,
     pub start_requested: bool,
     pub delete_requested: bool,
@@ -80,6 +84,7 @@ pub struct ContainerSlotMutation {
 
 pub struct ContainerSlotView {
     pub slot: ContainerSlot,
+    pub egress: Option<gateway_core::account::AccountSlotEgress>,
     pub state: &'static str,
     pub reason: Option<&'static str>,
 }

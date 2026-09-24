@@ -99,8 +99,9 @@ fn record(row: PgRow) -> StoreResult<ProxyRecord> {
     let ipv4: Option<String> = row.try_get("last_test_ipv4").map_err(|_| invalid())?;
     let ipv6: Option<String> = row.try_get("last_test_ipv6").map_err(|_| invalid())?;
     let latency: Option<i64> = row.try_get("last_test_latency_ms").map_err(|_| invalid())?;
+    let location = location_from_row(&row)?;
     Ok(ProxyRecord {
-        location: location_from_row(&row)?,
+        location: location.clone(),
         id: row.try_get("id").map_err(|_| invalid())?,
         name: row.try_get("name").map_err(|_| invalid())?,
         proxy: OutboundProxy::parse(
@@ -132,6 +133,7 @@ fn record(row: PgRow) -> StoreResult<ProxyRecord> {
                     exit_ipv6: ipv6
                         .map(|ip| ip.parse().map_err(|_| invalid()))
                         .transpose()?,
+                    location: location.clone(),
                     message: row
                         .try_get::<Option<String>, _>("last_test_message")
                         .map_err(|_| invalid())?
@@ -722,6 +724,23 @@ impl ProxyStore for PgProxyRepository {
             .execute(&mut *transaction).await.map_err(|_| store_error(unavailable()))?;
         if updated.rows_affected() != 1 {
             return Err(store_error(conflict(id)));
+        }
+        if let Some(location) = &result.location {
+            // 有真实出口探测结果时，以探测位置为准；没有结果时保留原有手工位置。
+            sqlx::query(
+                "update outbound_proxies set location_country = $2,
+                 location_region = $3, location_city = $4, location_timezone = $5,
+                 updated_at = greatest(now(), updated_at)
+                 where id = $1",
+            )
+            .bind(id)
+            .bind(&location.country)
+            .bind(&location.region)
+            .bind(&location.city)
+            .bind(location.timezone.name())
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| store_error(unavailable()))?;
         }
         let current: i64 =
             sqlx::query_scalar("select config_revision from runtime_settings where id = 1")

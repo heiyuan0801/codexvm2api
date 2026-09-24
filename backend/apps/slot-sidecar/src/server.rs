@@ -1,12 +1,13 @@
 //! sidecar HTTP 边界与认证。
 
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Json, State};
 use axum::http::{HeaderMap, Response, StatusCode, header};
 use axum::routing::{get, post};
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 
@@ -39,6 +40,7 @@ pub async fn build_router(config: &SidecarConfig) -> Result<Router, SidecarBuild
     });
     Ok(Router::new()
         .route("/readyz", get(ready))
+        .route("/internal/v1/egress", get(handle_egress))
         .route("/internal/v1/forward", post(handle_forward))
         .with_state(state))
 }
@@ -98,6 +100,99 @@ async fn handle_forward(
         Ok(response) => response,
         Err(error) => sanitized_error(error.status(), error.to_string()),
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EgressView {
+    ip: IpAddr,
+    location: Option<EgressLocation>,
+}
+
+#[derive(Debug, Serialize)]
+struct EgressLocation {
+    country: String,
+    region: String,
+    city: String,
+    timezone: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IpifyResponse {
+    ip: IpAddr,
+}
+
+#[derive(Debug, Deserialize)]
+struct IpWhoResponse {
+    status: Option<String>,
+    success: Option<bool>,
+    #[serde(alias = "countryCode")]
+    country_code: Option<String>,
+    region: Option<String>,
+    #[serde(rename = "regionName")]
+    region_name: Option<String>,
+    city: Option<String>,
+    timezone: Option<serde_json::Value>,
+}
+
+async fn handle_egress(
+    State(state): State<Arc<SidecarState>>,
+    headers: HeaderMap,
+) -> Response<Body> {
+    if !authorized(&headers, &state.token) {
+        return sanitized_error(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    match detect_egress(&state.client).await {
+        Ok(result) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&result).expect("egress serializes"),
+            ))
+            .expect("static egress response"),
+        Err(error) => sanitized_error(StatusCode::BAD_GATEWAY, error),
+    }
+}
+
+async fn detect_egress(client: &reqwest::Client) -> Result<EgressView, &'static str> {
+    let ip = client
+        .get("https://api.ipify.org?format=json")
+        .timeout(Duration::from_secs(12))
+        .send()
+        .await
+        .map_err(|_| "egress IP check failed")?
+        .error_for_status()
+        .map_err(|_| "egress IP check returned an error")?
+        .json::<IpifyResponse>()
+        .await
+        .map_err(|_| "egress IP response is invalid")?
+        .ip;
+    let location = match client
+        .get(format!("http://ip-api.com/json/{ip}"))
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+    {
+        Ok(response) => response.json::<IpWhoResponse>().await.ok(),
+        Err(_) => None,
+    }
+    .and_then(|value| {
+        if value.success == Some(false) || value.status.as_deref() == Some("fail") {
+            return None;
+        }
+        let timezone = match value.timezone? {
+            serde_json::Value::String(value) => value,
+            serde_json::Value::Object(value) => value.get("id")?.as_str()?.to_owned(),
+            _ => return None,
+        };
+        Some(EgressLocation {
+            country: value.country_code?.to_ascii_uppercase(),
+            region: value.region.or(value.region_name)?,
+            city: value.city?,
+            timezone,
+        })
+    });
+    Ok(EgressView { ip, location })
 }
 
 fn authorized(headers: &HeaderMap, expected: &[u8]) -> bool {

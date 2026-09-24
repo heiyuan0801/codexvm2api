@@ -40,7 +40,11 @@ const selected = computed(() => slots.value.find(slot => slot.id === selectedId.
 const readyCount = computed(() => slots.value.filter(slot => slot.state === 'ready').length)
 const pendingCount = computed(() => slots.value.filter(slot => slot.state === 'starting' || slot.state === 'stopping').length)
 const slotSummary = computed(() => `${readyCount.value} 个运行中 · ${slots.value.length} 个槽位${pendingCount.value ? ` · ${pendingCount.value} 个处理中` : ''}`)
-const proxyOptions = computed(() => [{ label: '暂不配置代理', value: '' }, ...proxies.value.map(proxy => ({ label: `${proxy.name} · ${proxy.endpoint}`, value: proxy.id }))])
+const proxyOptions = computed(() => [{ label: '暂不配置代理', value: '' }, ...proxies.value.map((proxy) => {
+  const location = proxy.location ? ` · ${proxy.location.city} · ${proxy.location.timezone}` : ''
+  const exitIp = proxy.lastTest?.exitIp ? ` · 出口 ${proxy.lastTest.exitIp}` : ''
+  return { label: `${proxy.name} · ${proxy.endpoint}${location}${exitIp}`, value: proxy.id }
+})])
 const oauthAccounts = computed(() => accounts.value.filter(account => account.authenticationKind === 'oauth'))
 const accountOptions = computed(() => [{ label: selected.value?.accountId ? '解除当前账号绑定' : '暂不绑定账号', value: '', disabled: false }, ...oauthAccounts.value.map((account) => {
   const bound = slots.value.find(slot => slot.accountId === account.id)
@@ -85,6 +89,18 @@ function shortFingerprint(value: string | undefined) {
   if (value.length <= 20)
     return value
   return `${value.slice(0, 8)}…${value.slice(-8)}`
+}
+function locationLabel(location: ContainerSlot['proxyLocation']) {
+  if (!location)
+    return '未检测到位置'
+  return [location.country, location.region, location.city].filter(Boolean).join(' · ') || location.timezone
+}
+function proxyTestLabel(slot: ContainerSlot) {
+  const ip = slot.egress?.ip ?? slot.proxyExitIp
+  const location = slot.egress?.location ?? slot.proxyLocation
+  if (!ip)
+    return '未检测'
+  return `${slot.egress ? '容器 ' : ''}${ip} · ${locationLabel(location)}`
 }
 function deleting(slot: ContainerSlot) {
   return slot.state === 'deleting' || slot.state === 'delete-failed'
@@ -289,6 +305,10 @@ onScopeDispose(() => clearInterval(timer))
                 <dd class="max-w-[70%] truncate text-right text-cp-text" :title="slot.proxyName ?? undefined">{{ slot.proxyName ?? '待配置代理' }}</dd>
               </div>
               <div class="flex items-center justify-between gap-3">
+                <dt class="text-cp-text-tertiary">出口检测</dt>
+                <dd class="max-w-[70%] truncate text-right font-mono text-cp-xs text-cp-text" :title="proxyTestLabel(slot)">{{ proxyTestLabel(slot) }}</dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
                 <dt class="text-cp-text-tertiary">主机</dt>
                 <dd class="max-w-[70%] truncate text-right text-cp-text" :title="slot.hostname ?? undefined">{{ slot.hostname || '未生成主机名' }}</dd>
               </div>
@@ -437,6 +457,30 @@ onScopeDispose(() => clearInterval(timer))
             <div class="min-w-0">
               <dt class="text-cp-xs text-cp-text-tertiary">Installation ID</dt>
               <dd class="mt-1 break-all font-mono text-cp-xs text-cp-text" :title="selected.installationId">{{ shortFingerprint(selected.installationId) }}</dd>
+            </div>
+          </dl>
+        </BaseFormItem>
+        <BaseFormItem label="代理出口检测" description="代理测试成功后自动保存出口 IP、地区和时区；位置用于同步容器运行时身份">
+          <dl class="grid gap-2 rounded-cp bg-cp-fill-quaternary p-3 text-cp-sm sm:grid-cols-2">
+            <div class="min-w-0">
+              <dt class="text-cp-xs text-cp-text-tertiary">出口 IP</dt>
+              <dd class="mt-1 break-all font-mono text-cp-xs text-cp-text">{{ selected.egress?.ip || selected.proxyExitIp || '未检测' }}</dd>
+            </div>
+            <div class="min-w-0">
+              <dt class="text-cp-xs text-cp-text-tertiary">地区</dt>
+              <dd class="mt-1 break-all text-cp-text">{{ locationLabel(selected.egress?.location || selected.proxyLocation) }}</dd>
+            </div>
+            <div class="min-w-0">
+              <dt class="text-cp-xs text-cp-text-tertiary">检测时区</dt>
+              <dd class="mt-1 break-all text-cp-text">{{ selected.egress?.location?.timezone || selected.proxyLocation?.timezone || '未检测' }}</dd>
+            </div>
+            <div class="min-w-0">
+              <dt class="text-cp-xs text-cp-text-tertiary">最近检测</dt>
+              <dd class="mt-1 break-all text-cp-text">{{ selected.proxyTestedAt ? new Date(selected.proxyTestedAt).toLocaleString() : '未检测' }}</dd>
+            </div>
+            <div class="min-w-0 sm:col-span-2">
+              <dt class="text-cp-xs text-cp-text-tertiary">容器内验证</dt>
+              <dd class="mt-1 break-all text-cp-text">{{ selected.egress ? '已通过 sidecar 经代理检测' : '等待容器运行后检测' }}</dd>
             </div>
           </dl>
         </BaseFormItem>

@@ -94,6 +94,7 @@ struct ProxyTestView {
     exit_ip: Option<String>,
     exit_ipv4: Option<String>,
     exit_ipv6: Option<String>,
+    location: Option<gateway_core::account::RequestLocation>,
     message: String,
 }
 
@@ -105,6 +106,7 @@ impl From<ProxyTestResult> for ProxyTestView {
             exit_ip: result.exit_ip.map(|ip| ip.to_string()),
             exit_ipv4: result.exit_ipv4.map(|ip| ip.to_string()),
             exit_ipv6: result.exit_ipv6.map(|ip| ip.to_string()),
+            location: result.location,
             message: result.message,
         }
     }

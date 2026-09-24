@@ -135,8 +135,19 @@ impl AccountSlotsService for DefaultAccountSlotsService {
                 } else {
                     ("degraded", Some("尚未绑定账号"))
                 };
+                let egress = slot.account_id.as_ref().and_then(|account| {
+                    let desired = gateway_core::account::ProviderAccountSlot::new(
+                        account.clone(),
+                        slot.running,
+                        slot.id,
+                        slot.identity.clone(),
+                        slot.generation,
+                    );
+                    self.runtime.egress_for_slot(&desired)
+                });
                 ContainerSlotView {
                     slot,
+                    egress,
                     state,
                     reason,
                 }

@@ -38,6 +38,38 @@ async fn proxy_probe_supports_ipv4_and_ipv6_proxies_and_exit_addresses() {
 }
 
 #[tokio::test]
+async fn proxy_probe_enriches_exit_ip_with_location() {
+    let proxy_server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ip": "8.8.8.8"})))
+        .expect(1)
+        .mount(&proxy_server)
+        .await;
+    let location_server = MockServer::start().await;
+    Mock::given(path("/8.8.8.8"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "success",
+            "countryCode": "US",
+            "regionName": "California",
+            "city": "Mountain View",
+            "timezone": "America/Los_Angeles"
+        })))
+        .expect(1)
+        .mount(&location_server)
+        .await;
+
+    let result = HttpProxyProbe::new(proxy_server.uri())
+        .with_location_endpoint(location_server.uri())
+        .test(&OutboundProxy::parse(&proxy_server.uri()).unwrap())
+        .await;
+
+    let location = result.location.expect("location");
+    assert_eq!(location.country, "US");
+    assert_eq!(location.city, "Mountain View");
+    assert_eq!(location.timezone.name(), "America/Los_Angeles");
+}
+
+#[tokio::test]
 async fn proxy_probe_rejects_auth_errors_redirects_and_invalid_or_oversized_responses() {
     for response in [
         ResponseTemplate::new(407),

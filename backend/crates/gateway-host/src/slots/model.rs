@@ -1,8 +1,8 @@
 //! 槽位资源期望与可恢复运行观测。
 
 use gateway_core::account::{
-    AccountSlotGeneration, AccountSlotInstanceId, AccountSlotRoute, OutboundProxy,
-    ProviderAccountId,
+    AccountSlotEgress, AccountSlotGeneration, AccountSlotInstanceId, AccountSlotRoute,
+    OutboundProxy, ProviderAccountId,
 };
 
 /// Host 对单个账号槽位的收敛输入。
@@ -49,6 +49,7 @@ pub struct AccountSlotHealth {
     pub generation: AccountSlotGeneration,
     pub state: AccountSlotRuntimeState,
     pub reason: Option<&'static str>,
+    pub egress: Option<AccountSlotEgress>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

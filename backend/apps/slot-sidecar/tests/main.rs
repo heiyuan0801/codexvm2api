@@ -26,6 +26,24 @@ async fn forward_requires_the_slot_bearer_token() {
 }
 
 #[tokio::test]
+async fn egress_requires_the_slot_bearer_token() {
+    let fixture = Fixture::new("http://127.0.0.1:9");
+    let router = build_router(&fixture.config()).await.expect("router");
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/internal/v1/egress")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()["x-cpr-slot-error"], "true");
+}
+
+#[tokio::test]
 async fn forward_rejects_paths_outside_the_codex_responses_endpoint() {
     let fixture = Fixture::new("http://127.0.0.1:9");
     let router = build_router(&fixture.config()).await.expect("router");

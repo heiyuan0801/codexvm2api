@@ -60,6 +60,10 @@ struct View {
     account_enabled: bool,
     proxy_id: Option<String>,
     proxy_name: Option<String>,
+    proxy_location: Option<gateway_core::account::RequestLocation>,
+    proxy_exit_ip: Option<String>,
+    proxy_tested_at: Option<chrono::DateTime<chrono::Utc>>,
+    egress: Option<EgressView>,
     hostname: String,
     machine_id: String,
     installation_id: String,
@@ -69,6 +73,14 @@ struct View {
     state: &'static str,
     reason: Option<&'static str>,
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EgressView {
+    ip: String,
+    location: Option<gateway_core::account::RequestLocation>,
+}
+
 impl From<ContainerSlotView> for View {
     fn from(value: ContainerSlotView) -> Self {
         let s = value.slot;
@@ -80,6 +92,13 @@ impl From<ContainerSlotView> for View {
             account_enabled: s.account_enabled,
             proxy_id: s.proxy_id,
             proxy_name: s.proxy_name,
+            proxy_location: s.proxy_location,
+            proxy_exit_ip: s.proxy_exit_ip.map(|ip| ip.to_string()),
+            proxy_tested_at: s.proxy_tested_at,
+            egress: value.egress.map(|egress| EgressView {
+                ip: egress.ip().to_string(),
+                location: egress.location().cloned(),
+            }),
             hostname: s.identity.hostname().to_owned(),
             machine_id: s.identity.machine_id().to_owned(),
             installation_id: s.identity.installation_id().to_owned(),

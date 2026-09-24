@@ -180,6 +180,7 @@ impl AccountSlotEngine for FakeEngine {
                 generation: desired.generation,
                 state,
                 reason: None,
+                egress: None,
             },
             route: (state == AccountSlotRuntimeState::Ready).then(route),
         })
@@ -205,6 +206,7 @@ fn health(
         generation: AccountSlotGeneration::new(1).unwrap(),
         state,
         reason: None,
+        egress: None,
     }
 }
 

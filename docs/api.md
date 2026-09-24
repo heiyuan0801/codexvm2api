@@ -511,7 +511,7 @@ Images、独立 Search 及管理员连接测试不受该文本模型限制；连
 | `POST` | `/api/admin/proxies/delete` | `{ id, revision }` | `{ configRevision }` |
 
 `record` 包含 `id`、`name`、`endpoint`、`hasAuthentication`、`revision`、`accountCount`、`location`、
-`lastTestAt`、`lastTest: { success, latencyMs, exitIp, exitIpv4, exitIpv6, message }`、`createdAt`、`updatedAt`。
+`lastTestAt`、`lastTest: { success, latencyMs, exitIp, exitIpv4, exitIpv6, location, message }`、`createdAt`、`updatedAt`。
 未测试时 `lastTestAt` / `lastTest` 为 `null`。连通性失败返回 HTTP 200 和 `lastTest.success=false`；
 记录版本过期、重复 URL、删除已绑定的代理返回 409，并发测试满载返回 429。
 
@@ -539,6 +539,8 @@ Images、独立 Search 及管理员连接测试不受该文本模型限制；连
 
 测试经代理并发访问 IPv4 专用端点 `https://api.ipify.org?format=json` 与 IPv6 专用端点 `https://api6.ipify.org?format=json`，
 分别验证并记录双栈出口（IPv4 与 IPv6 地址），在任一地址族可用时即判定连接成功。超时 15 秒，每进程最多同时测试 4 条。
+成功后使用出口 IP 查询位置检测接口，尽力补齐 `location: { country, region, city, timezone }`；位置查询失败不影响代理连通性结果。
+位置检测结果会显示在代理管理和关联容器卡片中。槽位绑定代理后，检测到的 IANA 时区会同步到槽位身份，并推进 generation 让运行容器按新环境重建。
 探测器复用 OpenAI 的证书信任配置：优先读取非空的 `CODEX_CA_CERTIFICATE`，
 其次读取 `SSL_CERT_FILE`，并保留系统根证书；证书配置错误不会回退为不验证证书。
 出口测试结果仅供诊断，不限制代理的选择和绑定；未测试或测试失败的代理仍可使用。
@@ -1455,7 +1457,9 @@ Host 关闭或任务取消会记录失败终态；状态查询会收敛无执行
 | `stop` | `id`、`expectedGeneration` | 请求停止，保留绑定、身份和 HOME |
 | `delete` | `id`、`expectedGeneration` | 停止意图且未绑定账号时提交删除；后台清理 owned 容器、独立网络和 HOME 卷，全部成功后删除配置 |
 
-列表项含 `id`、`name`、`accountId`、`accountName`、`accountEnabled`、`proxyId`、`proxyName`、`hostname`、`machineId`、`installationId`、`timezone`、`running`、`generation`、`state` 和 `reason`；仅管理员可读取这些槽位身份字段，不返回代理凭据、内部地址或 bearer token。前端列表和详情会缩短身份标识，悬停可核对完整值。`running` 为期望运行状态，不能代替实际 `state`。
+列表项含 `id`、`name`、`accountId`、`accountName`、`accountEnabled`、`proxyId`、`proxyName`、`proxyLocation`、`proxyExitIp`、`proxyTestedAt`、`egress: { ip, location }`、`hostname`、`machineId`、`installationId`、`timezone`、`running`、`generation`、`state` 和 `reason`；`egress` 是 sidecar 容器内经代理检测到的最近出口，尚未运行或检测失败时为 `null`。仅管理员可读取这些槽位身份字段，不返回代理凭据、内部地址或 bearer token。前端列表和详情会缩短身份标识，悬停可核对完整值。`running` 为期望运行状态，不能代替实际 `state`。
+
+每个槽位创建时生成并持久保存 hostname、machine-id、installation-id 和 HOME 卷；容器重建只复用这些软件身份，删除槽位后才会生成新身份。运行环境固定使用槽位代理同步的 `TZ`、`LANG=C.UTF-8`、`LC_ALL=C.UTF-8` 和 `/var/lib/cpr-slot/home`。TPM、SMBIOS、磁盘序列号等宿主机硬件身份不在普通容器内伪造，不能把软件身份字段当作硬件证明。
 
 状态包括 `not-created`、`stopped`、`stopping`、`starting`、`ready`、`degraded`、`global-disabled`、`unknown`、`deleting` 和 `delete-failed`。启动成功需等待 `ready`；Docker 不可用或全局关闭时不能把停止意图当作已完成停机。
 

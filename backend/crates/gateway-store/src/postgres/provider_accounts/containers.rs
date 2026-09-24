@@ -6,7 +6,9 @@ use gateway_admin::model::account_slots::{
 
 const SELECT: &str = "select s.account_id, s.enabled, s.instance_id::text as instance_id,
  s.identity_json, s.desired_generation, s.name, s.proxy_id, s.start_requested_at is not null as start_requested,
- s.delete_requested_at is not null as delete_requested, a.name as account_name, coalesce(a.enabled, false) as account_enabled, p.name as proxy_name
+ s.delete_requested_at is not null as delete_requested, a.name as account_name, coalesce(a.enabled, false) as account_enabled,
+ p.name as proxy_name, p.location_country, p.location_region, p.location_city, p.location_timezone,
+ p.last_test_ip, p.last_test_at
  from openai_account_slots s left join provider_accounts a on a.id = s.account_id
  left join outbound_proxies p on p.id = s.proxy_id order by s.created_at, s.instance_id";
 
@@ -24,6 +26,13 @@ pub(super) async fn list(
                 .map_err(|_| invalid("槽位身份数据无效"))?;
             let id: String = row.try_get("instance_id").map_err(db_error)?;
             let generation: i64 = row.try_get("desired_generation").map_err(db_error)?;
+            let proxy_location = crate::postgres::proxies::location_from_row(&row)
+                .map_err(|_| invalid("代理位置数据无效"))?;
+            let proxy_exit_ip = row
+                .try_get::<Option<String>, _>("last_test_ip")
+                .map_err(db_error)?
+                .map(|value| value.parse().map_err(|_| invalid("代理出口 IP 无效")))
+                .transpose()?;
             Ok(ContainerSlot {
                 id: AccountSlotInstanceId::parse(&format!("slot_{id}"))
                     .map_err(|_| invalid("槽位 ID 无效"))?,
@@ -38,6 +47,9 @@ pub(super) async fn list(
                 account_enabled: row.try_get("account_enabled").map_err(db_error)?,
                 proxy_id: row.try_get("proxy_id").map_err(db_error)?,
                 proxy_name: row.try_get("proxy_name").map_err(db_error)?,
+                proxy_location,
+                proxy_exit_ip,
+                proxy_tested_at: row.try_get("last_test_at").map_err(db_error)?,
                 running: row.try_get("enabled").map_err(db_error)?,
                 start_requested: row.try_get("start_requested").map_err(db_error)?,
                 delete_requested: row.try_get("delete_requested").map_err(db_error)?,
@@ -74,7 +86,7 @@ pub(super) async fn mutate(
             .bind(&id_text).bind(name.trim()).bind(identity).execute(&mut *tx).await.map_err(db_error)?;
         action_name = "create_container";
     } else {
-        let row = sqlx::query("select account_id, enabled, proxy_id, desired_generation, delete_requested_at is not null as deleting from openai_account_slots where instance_id = $1::uuid for update")
+        let row = sqlx::query("select account_id, enabled, proxy_id, identity_json, desired_generation, delete_requested_at is not null as deleting from openai_account_slots where instance_id = $1::uuid for update")
             .bind(&id_text).fetch_optional(&mut *tx).await.map_err(db_error)?
             .ok_or_else(|| AdminStoreError::new(AdminStoreErrorKind::NotFound, "containers", "槽位不存在"))?;
         let generation: i64 = row.try_get("desired_generation").map_err(db_error)?;
@@ -91,6 +103,7 @@ pub(super) async fn mutate(
         let account: Option<String> = row.try_get("account_id").map_err(db_error)?;
         let running: bool = row.try_get("enabled").map_err(db_error)?;
         let proxy: Option<String> = row.try_get("proxy_id").map_err(db_error)?;
+        let identity: serde_json::Value = row.try_get("identity_json").map_err(db_error)?;
         if let Some(account) = &account {
             affected_accounts.push(
                 CoreProviderAccountId::new(account.clone()).map_err(|_| invalid("账号 ID 无效"))?,
@@ -101,26 +114,43 @@ pub(super) async fn mutate(
                 if running {
                     return Err(invalid("请先停止容器，再修改代理"));
                 }
-                if let Some(proxy_id) = &proxy_id {
-                    let url: Option<String> = sqlx::query_scalar(
-                        "select proxy_url from outbound_proxies where id = $1 for share",
+                let mut updated_identity = identity;
+                let proxy_timezone = if let Some(proxy_id) = &proxy_id {
+                    let record: Option<(String, Option<String>)> = sqlx::query_as(
+                        "select proxy_url, location_timezone from outbound_proxies where id = $1 for share",
                     )
                     .bind(proxy_id)
                     .fetch_optional(&mut *tx)
                     .await
                     .map_err(db_error)?;
-                    if !url
-                        .as_deref()
-                        .is_some_and(|url| gateway_core::account::OutboundProxy::parse(url).is_ok())
-                    {
+                    let (url, timezone) = record.ok_or_else(|| invalid("请选择有效代理"))?;
+                    if gateway_core::account::OutboundProxy::parse(&url).is_err() {
                         return Err(invalid("请选择有效代理"));
                     }
+                    timezone
+                } else {
+                    None
+                };
+                let mut identity_changed = false;
+                if let Some(timezone) = proxy_timezone {
+                    if updated_identity
+                        .get("timezone")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(timezone.as_str())
+                    {
+                        updated_identity["timezone"] = serde_json::Value::String(timezone);
+                        identity_changed = true;
+                    }
                 }
+                let proxy_changed = proxy != proxy_id;
+                let generation_bump = i64::from(identity_changed && !proxy_changed);
                 sqlx::query(
-                    "update openai_account_slots set proxy_id = $2 where instance_id = $1::uuid",
+                    "update openai_account_slots set proxy_id = $2, identity_json = $3, desired_generation = desired_generation + $4 where instance_id = $1::uuid",
                 )
                 .bind(&id_text)
                 .bind(proxy_id)
+                .bind(updated_identity)
+                .bind(generation_bump)
                 .execute(&mut *tx)
                 .await
                 .map_err(db_error)?;

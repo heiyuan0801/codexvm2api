@@ -2142,6 +2142,7 @@ async fn authorization_import_rejects_a_saved_proxy_changed_during_oauth() {
         exit_ip: Some("203.0.113.5".parse().unwrap()),
         exit_ipv4: Some("203.0.113.5".parse().unwrap()),
         exit_ipv6: None,
+        location: None,
         message: "Connected".to_owned(),
     };
     proxies

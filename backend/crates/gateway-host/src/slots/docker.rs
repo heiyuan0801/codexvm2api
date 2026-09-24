@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -20,9 +21,11 @@ use bollard::query_parameters::{
 use bollard::{API_DEFAULT_VERSION, Docker};
 use futures::StreamExt;
 use gateway_core::account::{
-    AccountSlotBearerToken, AccountSlotGeneration, AccountSlotInstanceId, AccountSlotRoute,
+    AccountSlotBearerToken, AccountSlotEgress, AccountSlotGeneration, AccountSlotInstanceId,
+    AccountSlotRoute, RequestLocation,
 };
 use reqwest::header::{AUTHORIZATION, HeaderValue};
+use serde::Deserialize;
 use tar::{Archive, Builder, EntryType, Header};
 use uuid::Uuid;
 
@@ -43,6 +46,21 @@ const SLOT_ROOT: &str = "/var/lib/cpr-slot";
 const AUTH_PATH: &str = "/var/lib/cpr-slot/secrets/auth";
 const PROXY_PATH: &str = "/var/lib/cpr-slot/secrets/proxy";
 const SIDECAR_PORT: u16 = 8090;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EgressResponse {
+    ip: IpAddr,
+    location: Option<EgressLocationResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EgressLocationResponse {
+    country: String,
+    region: String,
+    city: String,
+    timezone: String,
+}
 
 /// 只持有非敏感配置；代理 URL 和 bearer token 不进入结构化日志。
 pub struct BollardAccountSlotEngine {
@@ -236,6 +254,9 @@ impl BollardAccountSlotEngine {
             env: Some(vec![
                 format!("HOME={SLOT_ROOT}/home"),
                 format!("TZ={}", desired.timezone),
+                // 统一 UTF-8 locale，避免不同基础镜像下语言和路径解析不一致。
+                "LANG=C.UTF-8".to_owned(),
+                "LC_ALL=C.UTF-8".to_owned(),
                 "CPR_SLOT_LISTEN=0.0.0.0:8090".to_owned(),
                 format!("CPR_SLOT_AUTH_FILE={AUTH_PATH}"),
                 format!("CPR_SLOT_PROXY_FILE={PROXY_PATH}"),
@@ -380,6 +401,42 @@ impl BollardAccountSlotEngine {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         Ok(false)
+    }
+
+    async fn verify_egress(
+        &self,
+        endpoint: &reqwest::Url,
+        token: &AccountSlotBearerToken,
+    ) -> Option<AccountSlotEgress> {
+        let url = endpoint.join("/internal/v1/egress").ok()?;
+        let mut authorization = Vec::with_capacity(7 + token.expose_to_provider().len());
+        authorization.extend_from_slice(b"Bearer ");
+        authorization.extend_from_slice(token.expose_to_provider());
+        let authorization = HeaderValue::from_bytes(&authorization).ok()?;
+        let report = self
+            .health_client
+            .get(url)
+            .timeout(Duration::from_secs(20))
+            .header(AUTHORIZATION, authorization)
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .json::<EgressResponse>()
+            .await
+            .ok()?;
+        let location = report.location.and_then(|location| {
+            RequestLocation {
+                country: location.country,
+                region: location.region,
+                city: location.city,
+                timezone: location.timezone.parse().ok()?,
+            }
+            .normalized()
+            .ok()
+        });
+        Some(AccountSlotEgress::new(report.ip, location))
     }
 
     async fn slot_endpoint(
@@ -618,6 +675,13 @@ impl AccountSlotEngine for BollardAccountSlotEngine {
         }
         let endpoint = self.slot_endpoint(&names).await?;
         let ready = self.wait_until_ready(&endpoint, &token).await?;
+        // 出口检查是容器内经绑定代理发出的真实请求；检测服务暂时不可用时保留
+        // sidecar Ready 状态，下一轮对账会再次刷新报告。
+        let egress = if ready {
+            self.verify_egress(&endpoint, &token).await
+        } else {
+            None
+        };
         let state = if ready {
             AccountSlotRuntimeState::Ready
         } else {
@@ -629,6 +693,7 @@ impl AccountSlotEngine for BollardAccountSlotEngine {
                 generation: desired.generation,
                 state,
                 reason: (!ready).then_some("sidecar readiness check failed"),
+                egress,
             },
             route: if ready {
                 Some(AccountSlotRoute::new(endpoint, token))
@@ -760,6 +825,7 @@ fn health_from_labels(
             AccountSlotRuntimeState::Stopped
         },
         reason: None,
+        egress: None,
     })
 }
 

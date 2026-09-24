@@ -137,6 +137,7 @@ async fn authorization_uses_selected_proxy_regardless_of_probe_status() {
                             exit_ip: None,
                             exit_ipv4: None,
                             exit_ipv6: None,
+                            location: None,
                             message: "出口探测结果".to_owned(),
                         }),
                         created_at: now,

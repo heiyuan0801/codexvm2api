@@ -239,6 +239,7 @@ impl ProxyProbe for SuccessfulProbe {
             exit_ip: Some("203.0.113.2".parse().unwrap()),
             exit_ipv4: Some("203.0.113.2".parse().unwrap()),
             exit_ipv6: None,
+            location: None,
             message: "Connected".to_owned(),
         }
     }
@@ -398,6 +399,7 @@ async fn proxy_probe_checks_unsaved_address_without_creating_or_changing_records
             "exitIp": "203.0.113.2",
             "exitIpv4": "203.0.113.2",
             "exitIpv6": null,
+            "location": null,
             "message": "Connected"
         })
     );

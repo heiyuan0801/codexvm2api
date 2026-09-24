@@ -1,4 +1,5 @@
 import type { RequestOptions } from '../request'
+import type { RequestLocation } from '../types/request-location'
 import request from '../request'
 
 export interface ContainerSlot {
@@ -9,6 +10,13 @@ export interface ContainerSlot {
   accountEnabled: boolean
   proxyId: string | null
   proxyName: string | null
+  proxyLocation: RequestLocation | null
+  proxyExitIp: string | null
+  proxyTestedAt: string | null
+  egress: {
+    ip: string
+    location: RequestLocation | null
+  } | null
   hostname: string
   machineId: string
   installationId: string

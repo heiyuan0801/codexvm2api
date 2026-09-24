@@ -62,6 +62,8 @@ pub struct ProxyTestResult {
     pub exit_ip: Option<std::net::IpAddr>,
     pub exit_ipv4: Option<std::net::Ipv4Addr>,
     pub exit_ipv6: Option<std::net::Ipv6Addr>,
+    /// 由出口 IP 查询得到的位置；失败时不影响代理连通性结果。
+    pub location: Option<gateway_core::account::RequestLocation>,
     pub message: String,
 }
 
