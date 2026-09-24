@@ -9681,3 +9681,318 @@ async fn fast_policy_changes_preserve_the_websocket_continuation_and_meter_each_
     }
     server.await.unwrap();
 }
+
+struct SlotFixture {
+    desired: Option<gateway_core::account::ProviderAccountSlot>,
+    route: Option<gateway_core::account::AccountSlotRoute>,
+    store_unavailable: bool,
+}
+
+impl SlotFixture {
+    fn new(enabled: bool, sidecar: Option<&MockServer>) -> Self {
+        use gateway_core::account::{
+            AccountSlotBearerToken, AccountSlotGeneration, AccountSlotIdentity,
+            AccountSlotInstanceId, AccountSlotRoute, ProviderAccountSlot,
+        };
+        Self {
+            desired: Some(ProviderAccountSlot::new(
+                ProviderAccountId::new("acct_provider_contract").expect("account ID"),
+                enabled,
+                AccountSlotInstanceId::generate(),
+                AccountSlotIdentity::new(
+                    "slot-test".to_owned(),
+                    "0123456789abcdef0123456789abcdef".to_owned(),
+                    "00000000-0000-4000-8000-000000000001".to_owned(),
+                    "UTC".to_owned(),
+                )
+                .expect("identity"),
+                AccountSlotGeneration::new(1).expect("generation"),
+            )),
+            route: sidecar.map(|server| {
+                AccountSlotRoute::new(
+                    format!("{}/internal/v1/forward", server.uri())
+                        .parse()
+                        .expect("endpoint"),
+                    AccountSlotBearerToken::new(b"0123456789abcdef0123456789abcdef".to_vec())
+                        .expect("token"),
+                )
+            }),
+            store_unavailable: false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl gateway_core::account::ProviderAccountSlotStore for SlotFixture {
+    async fn pending_slot_deletions(
+        &self,
+    ) -> Result<Vec<gateway_core::account::AccountSlotInstanceId>, gateway_core::error::StoreError>
+    {
+        Ok(Vec::new())
+    }
+
+    async fn complete_slot_deletion(
+        &self,
+        _id: gateway_core::account::AccountSlotInstanceId,
+    ) -> Result<(), gateway_core::error::StoreError> {
+        Ok(())
+    }
+
+    async fn get_account_slot(
+        &self,
+        account_id: &ProviderAccountId,
+    ) -> Result<Option<gateway_core::account::ProviderAccountSlot>, gateway_core::error::StoreError>
+    {
+        if self.store_unavailable {
+            return Err(gateway_core::error::StoreError::new(
+                gateway_core::error::StoreErrorKind::Unavailable,
+            ));
+        }
+        Ok(self
+            .desired
+            .as_ref()
+            .filter(|slot| slot.account_id() == account_id)
+            .cloned())
+    }
+
+    async fn list_account_slots(
+        &self,
+    ) -> Result<Vec<gateway_core::account::ProviderAccountSlot>, gateway_core::error::StoreError>
+    {
+        Ok(self.desired.iter().cloned().collect())
+    }
+}
+
+impl gateway_core::account::AccountSlotRuntime for SlotFixture {
+    fn route(&self, _: &ProviderAccountId) -> Option<gateway_core::account::AccountSlotRoute> {
+        self.route.clone()
+    }
+}
+
+#[tokio::test]
+async fn account_slots_route_only_to_the_selected_destination() {
+    for enabled in [false, true] {
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_provider_contract").await;
+        let direct = MockServer::start().await;
+        let sidecar = MockServer::start().await;
+        let response = ResponseTemplate::new(200)
+            .insert_header("content-type", "text/event-stream")
+             .set_body_string(concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_slot\",\"model\":\"gpt-5.4\"}}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_slot\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"
+            ));
+        Mock::given(method("POST"))
+            .and(path("/codex/responses"))
+            .respond_with(response.clone())
+            .expect(if enabled { 0 } else { 1 })
+            .mount(&direct)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/internal/v1/forward"))
+            .and(header(
+                "authorization",
+                "Bearer 0123456789abcdef0123456789abcdef",
+            ))
+            .respond_with(response)
+            .expect(if enabled { 1 } else { 0 })
+            .mount(&sidecar)
+            .await;
+        let mut fixture = SlotFixture::new(enabled, Some(&sidecar));
+        if !enabled {
+            fixture.desired = None;
+        }
+        let slots = Arc::new(fixture);
+        let provider =
+            provider_with_base_url(&store, direct.uri()).with_account_slots(slots.clone(), slots);
+        let mut stream = provider
+            .execute(
+                planned_request(
+                    "openai",
+                    Operation::Generate(GenerateRequest::from_protocol_payload(
+                        ProtocolPayload::json_object(
+                            "openai",
+                            json!({"model":"gpt-5.4","input":"hello"})
+                                .as_object()
+                                .expect("body")
+                                .clone(),
+                        )
+                        .expect("payload")
+                        .with_context(Map::from_iter([
+                            ("use_websocket".to_owned(), json!(false)),
+                            (
+                                "opaque_request_headers".to_owned(),
+                                json!([
+                                    ["x-openai-future", STANDARD.encode(b"first")],
+                                    ["x-openai-future", STANDARD.encode(b"second-\x80")]
+                                ]),
+                            ),
+                        ])),
+                    )),
+                ),
+                context("req_slot_destination", CancellationToken::new()),
+            )
+            .await
+            .expect("prepare stream");
+        let mut completed = false;
+        while let Some(event) = stream.next().await {
+            completed |= event
+                .expect("response")
+                .canonical_facts()
+                .iter()
+                .any(|fact| matches!(fact, GatewayEvent::Completed(_)));
+        }
+        assert!(completed);
+        direct.verify().await;
+        sidecar.verify().await;
+        if enabled {
+            let requests = sidecar.received_requests().await.expect("requests");
+            let envelope: Value = serde_json::from_slice(&requests[0].body).expect("envelope");
+            assert_eq!(envelope["path"], "/backend-api/codex/responses");
+            let headers: Vec<(String, Vec<u8>)> =
+                serde_json::from_value(envelope["headers"].clone()).expect("headers");
+            assert!(headers.contains(&(
+                "authorization".to_owned(),
+                b"Bearer at-acct_provider_contract".to_vec()
+            )));
+            assert!(headers.contains(&("x-openai-future".to_owned(), b"first".to_vec())));
+            assert!(headers.contains(&("x-openai-future".to_owned(), b"second-\x80".to_vec())));
+        }
+    }
+}
+
+#[tokio::test]
+async fn account_slots_missing_route_or_store_failure_never_send() {
+    for (store_unavailable, running) in [(false, true), (true, true), (false, false)] {
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_provider_contract").await;
+        let direct = MockServer::start().await;
+        let stale_sidecar = MockServer::start().await;
+        let mut slots = SlotFixture::new(running, (!running).then_some(&stale_sidecar));
+        slots.store_unavailable = store_unavailable;
+        let slots = Arc::new(slots);
+        let provider =
+            provider_with_base_url(&store, direct.uri()).with_account_slots(slots.clone(), slots);
+        let error = provider
+            .execute(
+                planned_request("openai", generate_operation()),
+                context("req_slot_missing", CancellationToken::new()),
+            )
+            .await
+            .err()
+            .expect("must fail closed");
+        assert!(stale_sidecar.received_requests().await.unwrap().is_empty());
+        assert_eq!(error.kind(), ProviderErrorKind::Unavailable);
+        assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+        assert!(
+            direct
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn account_slots_sidecar_errors_preserve_account_credentials_and_send_safety() {
+    for (status, expected_send_state) in [
+        (401, UpstreamSendState::NotSent),
+        (502, UpstreamSendState::Ambiguous),
+    ] {
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_provider_contract").await;
+        let direct = MockServer::start().await;
+        let sidecar = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/v1/forward"))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .insert_header("x-cpr-slot-error", "true")
+                    .set_body_json(json!({"error":{"message":"slot error"}})),
+            )
+            .expect(1)
+            .mount(&sidecar)
+            .await;
+        let slots = Arc::new(SlotFixture::new(true, Some(&sidecar)));
+        let provider =
+            provider_with_base_url(&store, direct.uri()).with_account_slots(slots.clone(), slots);
+        let mut stream = provider
+            .execute(
+                planned_request("openai", generate_operation()),
+                context("req_slot_failure", CancellationToken::new()),
+            )
+            .await
+            .expect("prepare stream");
+        let error = loop {
+            match stream.next().await {
+                Some(Err(error)) => break error,
+                Some(Ok(_)) => {}
+                None => panic!("slot failure expected"),
+            }
+        };
+        assert_eq!(error.kind(), ProviderErrorKind::Unavailable);
+        assert_eq!(error.send_state(), expected_send_state);
+        assert_eq!(
+            store
+                .account("acct_provider_contract")
+                .expect("account")
+                .credential_state(),
+            CredentialState::Ready
+        );
+        assert!(
+            direct
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+        sidecar.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn account_slots_unsupported_image_and_search_never_bypass_the_slot() {
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_provider_contract").await;
+    let direct = MockServer::start().await;
+    let sidecar = MockServer::start().await;
+    let slots = Arc::new(SlotFixture::new(true, Some(&sidecar)));
+    let provider =
+        provider_with_base_url(&store, direct.uri()).with_account_slots(slots.clone(), slots);
+    let payload = RawJsonPayload::new("openai", Bytes::from_static(b"{\"prompt\":\"hello\"}"))
+        .expect("payload");
+    let operations = [
+        Operation::GenerateImage(ImageRequest::from_raw_json(
+            ImageRequestKind::Generation,
+            payload.clone(),
+        )),
+        Operation::Search(StandaloneSearchRequest::from_raw_json(payload)),
+    ];
+    for operation in operations {
+        let error = provider
+            .execute(
+                planned_provider_endpoint_request("openai", operation),
+                context("req_slot_endpoint", CancellationToken::new()),
+            )
+            .await
+            .err()
+            .expect("unsupported endpoint must fail closed");
+        assert_eq!(error.kind(), ProviderErrorKind::Unavailable);
+        assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+    }
+    assert!(
+        direct
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+    assert!(
+        sidecar
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+}

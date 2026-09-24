@@ -864,6 +864,16 @@ pub(super) fn map_client_error(
             ProviderErrorKind::Protocol,
             UpstreamSendState::NotSent,
         )),
+        CodexClientError::SlotUnavailable { not_sent } => {
+            MappedProviderFailure::plain(provider_error(
+                ProviderErrorKind::Unavailable,
+                if not_sent {
+                    UpstreamSendState::NotSent
+                } else {
+                    UpstreamSendState::Ambiguous
+                },
+            ))
+        }
         CodexClientError::StreamIdleTimeout { .. } => MappedProviderFailure::plain(provider_error(
             ProviderErrorKind::Timeout,
             UpstreamSendState::Sent,
@@ -1050,6 +1060,11 @@ fn client_diagnostic(error: &CodexClientError) -> Option<ProviderDiagnostic> {
             "prepare",
             "request_compression_failed",
             "OpenAI request compression failed".to_owned(),
+        ),
+        CodexClientError::SlotUnavailable { .. } => (
+            "exchange",
+            "slot_forward_failed",
+            "OpenAI account slot forwarding failed".to_owned(),
         ),
         CodexClientError::SlotProtocol => (
             "prepare",

@@ -142,6 +142,7 @@ pub struct ProviderAccountSlot {
     instance_id: AccountSlotInstanceId,
     identity: AccountSlotIdentity,
     generation: AccountSlotGeneration,
+    outbound_proxy: Option<super::OutboundProxy>,
 }
 
 impl ProviderAccountSlot {
@@ -159,7 +160,19 @@ impl ProviderAccountSlot {
             instance_id,
             identity,
             generation,
+            outbound_proxy: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_outbound_proxy(mut self, proxy: Option<super::OutboundProxy>) -> Self {
+        self.outbound_proxy = proxy;
+        self
+    }
+
+    #[must_use]
+    pub const fn outbound_proxy(&self) -> Option<&super::OutboundProxy> {
+        self.outbound_proxy.as_ref()
     }
 
     #[must_use]
@@ -197,6 +210,12 @@ pub trait ProviderAccountSlotStore: Send + Sync {
     ) -> Result<Option<ProviderAccountSlot>, StoreError>;
 
     async fn list_account_slots(&self) -> Result<Vec<ProviderAccountSlot>, StoreError>;
+
+    /// 只返回管理员明确请求删除的槽位，停止或孤儿状态不能推导为删除授权。
+    async fn pending_slot_deletions(&self) -> Result<Vec<AccountSlotInstanceId>, StoreError>;
+
+    /// Docker 容器、网络和数据卷全部清理成功后，幂等完成删除。
+    async fn complete_slot_deletion(&self, id: AccountSlotInstanceId) -> Result<(), StoreError>;
 }
 
 /// Provider 调用 sidecar 所需的每槽认证值。
@@ -253,8 +272,42 @@ impl AccountSlotRoute {
     }
 }
 
+/// 管理端可见的脱敏槽位状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountSlotState {
+    Disabled,
+    GlobalDisabled,
+    Starting,
+    Ready,
+    Degraded,
+}
+
+impl AccountSlotState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::GlobalDisabled => "global-disabled",
+            Self::Starting => "starting",
+            Self::Ready => "ready",
+            Self::Degraded => "degraded",
+        }
+    }
+}
+
 /// Provider 查询 Ready 槽位的进程内运行时端口。
 pub trait AccountSlotRuntime: Send + Sync {
+    fn route_for_slot(&self, slot: &ProviderAccountSlot) -> Option<AccountSlotRoute> {
+        self.route(slot.account_id())
+    }
+    fn status(&self, slot: &ProviderAccountSlot) -> AccountSlotState {
+        if self.route_for_slot(slot).is_some() {
+            AccountSlotState::Ready
+        } else {
+            AccountSlotState::Starting
+        }
+    }
+
     fn route(&self, account_id: &ProviderAccountId) -> Option<AccountSlotRoute>;
 }
 

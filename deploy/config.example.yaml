@@ -34,8 +34,10 @@ host:
   # 每个启用账号对应一个常驻 sidecar 容器和专属代理出口
   openai_slots:
     enabled: false
-    image: 'ghcr.io/zyycn/codex-proxy-rs-slot-sidecar:latest'
+    image: 'codex-slot-sidecar:local'
     docker_endpoint: 'unix:///var/run/docker.sock'
+    # 可显式指定网关容器 ID/名称，缺省使用容器内 HOSTNAME
+    gateway_container: null
     reconcile_interval_seconds: 10
     start_timeout_seconds: 30
     memory_limit_mb: 512

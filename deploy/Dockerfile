@@ -49,7 +49,7 @@ ENV TZ=Asia/Shanghai
 # 更新基础镜像已有的系统包，使固定 digest 的镜像也能获取 Debian 安全更新。
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl tzdata libpq5 \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl iptables tzdata libpq5 \
     && install -d /usr/lib/postgresql/18/bin \
     && ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
     && printf '%s\n' "${TZ}" > /etc/timezone \

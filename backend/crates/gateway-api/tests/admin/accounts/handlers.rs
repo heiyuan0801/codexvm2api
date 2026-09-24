@@ -88,3 +88,63 @@ async fn quota_forecast_requires_admin_and_valid_account_query() {
         assert!(value["message"].is_string());
     }
 }
+
+#[tokio::test]
+async fn slot_endpoints_require_admin_and_validate_the_request_contract() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    for (path, body, authenticated, expected) in [
+        (
+            "query",
+            r#"{"accountIds":["acct_test"]}"#,
+            false,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "update",
+            r#"{"accountId":"acct_test","enabled":true}"#,
+            false,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "query",
+            r#"{"accountIds":[]}"#,
+            true,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "query",
+            r#"{"accountIds":["bad"]}"#,
+            true,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "update",
+            r#"{"accountId":"acct_test","enabled":true,"endpoint":"http://evil"}"#,
+            true,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "query",
+            r#"{"accountIds":["acct_test"]}"#,
+            true,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+    ] {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/admin/accounts/slots/{path}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-request-id", "req_slot");
+        if authenticated {
+            request = request.header(header::COOKIE, "cpr_session=valid-session");
+        }
+        let response = admin::router::<AdminTestState>()
+            .with_state(fixture.state())
+            .oneshot(request.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{path} {body}");
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+}

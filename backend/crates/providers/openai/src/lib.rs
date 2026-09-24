@@ -8,7 +8,7 @@ mod session_transport;
 use std::sync::Arc;
 
 use gateway_admin::ports::provider::ProviderAdmin;
-use gateway_core::account::ProviderAccountStore;
+use gateway_core::account::{AccountSlotRuntime, ProviderAccountSlotStore, ProviderAccountStore};
 use gateway_core::engine::provider::Provider;
 use gateway_core::provider_ports::ProviderStorePorts;
 use gateway_core::routing::ProviderKind;
@@ -53,6 +53,21 @@ pub struct ProviderBundle {
 pub async fn initialize(
     config: OpenAiConfig,
     ports: ProviderStorePorts,
+) -> Result<ProviderBundle, OpenAiInitializeError> {
+    initialize_with_account_slots(config, ports, None).await
+}
+
+/// 组合根可选注入的槽位能力；空 Ready registry 仍保持启用账号 fail closed。
+pub struct OpenAiAccountSlotPorts {
+    pub store: Arc<dyn ProviderAccountSlotStore>,
+    pub runtime: Arc<dyn AccountSlotRuntime>,
+}
+
+/// 初始化 Provider 并共享 Host 发布的槽位路由。
+pub async fn initialize_with_account_slots(
+    config: OpenAiConfig,
+    ports: ProviderStorePorts,
+    slots: Option<OpenAiAccountSlotPorts>,
 ) -> Result<ProviderBundle, OpenAiInitializeError> {
     let provider_kind =
         ProviderKind::new("openai").map_err(|_| OpenAiInitializeError::InvalidProviderKind)?;
@@ -165,21 +180,23 @@ pub async fn initialize(
         Arc::clone(&account_feedback),
         CodexCookiePolicy::official().map_err(|_| OpenAiInitializeError::CookiePolicy)?,
     ));
-    let core_provider: Arc<dyn Provider> = Arc::new(
-        CodexProvider::new(
-            selector,
-            Arc::clone(&catalog),
-            Arc::clone(&quota),
-            account_feedback,
-            http,
-            profile.clone(),
-            config.base_url().to_owned(),
-            Arc::clone(&websocket_pool),
-            config.stream_max_retries(),
-        )
-        .map_err(OpenAiInitializeError::Provider)?
-        .with_session_identity(session_identity),
-    );
+    let mut core_provider = CodexProvider::new(
+        selector,
+        Arc::clone(&catalog),
+        Arc::clone(&quota),
+        account_feedback,
+        http,
+        profile.clone(),
+        config.base_url().to_owned(),
+        Arc::clone(&websocket_pool),
+        config.stream_max_retries(),
+    )
+    .map_err(OpenAiInitializeError::Provider)?
+    .with_session_identity(session_identity);
+    if let Some(slots) = slots {
+        core_provider = core_provider.with_account_slots(slots.store, slots.runtime);
+    }
+    let core_provider: Arc<dyn Provider> = Arc::new(core_provider);
     let token_client = Arc::new(
         credential::token_client::openai_token_client(
             config.token_client_config(),

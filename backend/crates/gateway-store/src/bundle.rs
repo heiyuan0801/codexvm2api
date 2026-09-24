@@ -1,6 +1,6 @@
 //! 完成连接、迁移与 hydration 的 Store 能力集合与启动屏障。
 
-use gateway_core::account::ProviderAccountStore;
+use gateway_core::account::{ProviderAccountSlotStore, ProviderAccountStore};
 use gateway_core::provider_ports::ProviderCooldownPort;
 
 use super::*;
@@ -10,6 +10,8 @@ pub struct StoreBundle {
     admin_ports: AdminStorePorts,
     core_ports: CoreStorePorts,
     provider_ports: ProviderStorePorts,
+    account_slots: Arc<dyn ProviderAccountSlotStore>,
+    account_slot_admin: Arc<dyn gateway_admin::ports::account_slots::AccountSlotAdminStore>,
     worker_leader_lease: Arc<dyn WorkerLeaderLeasePort>,
     health_probes: Vec<Arc<dyn HealthProbe>>,
     worker_contributions: Vec<WorkerContribution>,
@@ -41,6 +43,18 @@ impl StoreBundle {
         self.health_probes.clone()
     }
 
+    #[must_use]
+    pub fn account_slot_admin(
+        &self,
+    ) -> Arc<dyn gateway_admin::ports::account_slots::AccountSlotAdminStore> {
+        self.account_slot_admin.clone()
+    }
+
+    #[must_use]
+    pub fn account_slots(&self) -> Arc<dyn ProviderAccountSlotStore> {
+        Arc::clone(&self.account_slots)
+    }
+
     pub fn take_worker_contributions(&mut self) -> Vec<WorkerContribution> {
         std::mem::take(&mut self.worker_contributions)
     }
@@ -68,6 +82,8 @@ pub async fn initialize(mut config: StoreConfig) -> StoreResult<StoreBundle> {
         redis_connection.clone(),
         REDIS_NAMESPACE,
     )?);
+    let account_slot_admin = provider_accounts.clone();
+    let account_slots: Arc<dyn ProviderAccountSlotStore> = provider_accounts.clone();
     let account_store: Arc<dyn ProviderAccountStore> = provider_accounts;
 
     let credential_leases =
@@ -212,6 +228,8 @@ pub async fn initialize(mut config: StoreConfig) -> StoreResult<StoreBundle> {
         admin_ports,
         core_ports,
         provider_ports,
+        account_slots,
+        account_slot_admin,
         worker_leader_lease,
         health_probes,
         worker_contributions,

@@ -1,0 +1,32 @@
+# 显式启用的 Docker 槽位扩展，默认 compose 不授予 Docker 控制权
+services:
+  codex-proxy-rs:
+    # 出网规则必须在 Docker Engine 宿主网络命名空间中生效；普通 bridge
+    # 容器只能修改自己的命名空间，启动槽位后会持续报告 iptables 不可用。
+    network_mode: host
+    # Compose 的列表合并默认保留基础文件的端口，必须显式 reset，否则
+    # Docker 会拒绝同时使用 network_mode=host 和 ports 映射。
+    ports: !reset []
+    # Docker grants NET_ADMIN/NET_RAW to the root process. Running as the
+    # unprivileged cpr UID would leave CapEff empty (and iptables would fail
+    # with permission denied) even when cap_add is present.
+    user: '0:0'
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # host 网络下不能使用 Compose 服务名；数据库和 Redis 仍通过基础
+      # Compose 的 loopback 发布端口访问宿主机服务。
+      CPR_DATABASE_URL: postgres://codex_proxy@127.0.0.1:5432/codex_proxy
+      CPR_REDIS_URL: redis://127.0.0.1:6379/
+      CPR_OPENAI_SLOTS_ENABLED: 'true'
+      CPR_OPENAI_SLOTS_IMAGE: ${CPR_SLOT_IMAGE:-codex-slot-sidecar:local}
+
+  slot-sidecar:
+    profiles: [slot-build]
+    image: ${CPR_SLOT_IMAGE:-codex-slot-sidecar:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.slot-sidecar

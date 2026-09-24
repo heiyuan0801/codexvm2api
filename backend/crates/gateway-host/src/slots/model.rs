@@ -22,7 +22,7 @@ impl std::fmt::Debug for DesiredAccountSlot {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("DesiredAccountSlot")
-            .field("account_id", &self.account_id)
+            .field("account_id", &"<redacted>")
             .field("instance_id", &self.instance_id)
             .field("generation", &self.generation)
             .field("hostname", &self.hostname)

@@ -1,0 +1,23 @@
+FROM rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
+WORKDIR /app/backend
+ENV CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0
+COPY backend/Cargo.toml backend/Cargo.lock ./
+COPY backend/apps ./apps
+COPY backend/crates ./crates
+COPY backend/migrations ./migrations
+COPY release/version.yaml /app/release/version.yaml
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/backend/target \
+    set -eu; \
+    cargo test --locked -p gateway-host --test main --no-run --message-format=short \
+        > /tmp/slot-host-build.log 2>&1; \
+    cat /tmp/slot-host-build.log; \
+    test_binary="$(sed -n 's/^ *Executable tests\/main.rs (\(.*\))$/\1/p' /tmp/slot-host-build.log | tail -n 1)"; \
+    test -n "$test_binary"; \
+    cp "$test_binary" /tmp/slot-host-tests
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates iptables \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /tmp/slot-host-tests /usr/local/bin/slot-host-tests
+ENTRYPOINT ["/usr/local/bin/slot-host-tests", "slots::live::real_docker_slot_lifecycle", "--ignored", "--exact", "--nocapture"]

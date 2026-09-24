@@ -33,6 +33,9 @@ flowchart LR
   Registry --> OpenAI[provider-openai]
   Registry --> XAI[provider-xai]
   OpenAI --> OpenAIUpstream[OpenAI upstream]
+  OpenAI --> Slot[optional account slot-sidecar]
+  Slot --> Proxy[account proxy]
+  Proxy --> OpenAIUpstream
   XAI --> XAIUpstream[xAI upstream]
 
   Core --> Store[gateway-store]
@@ -56,12 +59,13 @@ flowchart LR
 | 路径 | 责任 |
 | --- | --- |
 | `backend/apps/gateway` | 读取顶层配置、连接 Bundle、注册 Provider 与 Worker |
+| `backend/apps/slot-sidecar` | 独立账号容器内的鉴权转发服务，只经该账号代理发送推理流量，不依赖其他 workspace crate |
 | `gateway-protocol` | 跨层共享的 OpenAI wire contract、SSE 编解码与无业务 owner 的解析事实，不依赖其他 workspace crate |
 | `gateway-core` | operation、canonical event、请求快照、路由、admission、attempt 协调、交付边界和计量 |
 | `gateway-admin` | 管理领域、Key 用量查询、Provider/Store 端口、审计语义和备份策略 |
 | `gateway-api` | HTTP/WS/SSE 解码与交付、Admin 与 Key 用量 wire、静态 Web UI；不直接访问 Store 或具体 Provider |
 | `gateway-store` | PostgreSQL、Redis、S3/R2、`pg_dump` 适配器；不拥有业务策略 |
-| `gateway-host` | 配置加载、日志、HTTP 生命周期、Worker 监督、系统更新及外部价格源适配 |
+| `gateway-host` | 配置加载、日志、HTTP 生命周期、Worker 监督、账号槽位 Docker 生命周期、系统更新及外部价格源适配 |
 | `providers/openai` | OpenAI OAuth、账号选择、目录、额度、Responses/Images/Search transport |
 | `providers/xai` | xAI OAuth session、账号选择、目录、额度和 Grok/Responses 转换 |
 | `frontend` | Vue 管理端与 Key 用量页，仅通过各自身份允许的控制面 API 访问状态 |
@@ -144,6 +148,25 @@ WS 路由提示属于握手，连接复用时不重发；档位变化不重建�
 独占发送、提交、重试和终结顺序。Provider 上报费用优先于本地估算，丢弃的 attempt 不得污染最终计量。
 Provider 本地估算按当前 attempt 实际发送的上游模型查价，响应声明的模型只作观测；费用明细复用同一口径。
 Client Key 费用账本独立累计各次 attempt 的实际费用，不能因请求重试而清空已产生的费用或未知计费状态。
+
+### 独立账号槽位
+
+组合根从 Store 取得账号与槽位持久化端口，交给 Host 构造期望状态源；同一个 Ready registry 注入
+Host 对账 worker 与 OpenAI Provider。Host 只通过 Core 端口读取账号事实，不直接依赖 PostgreSQL 实现。
+对账任务由现有 WorkerSupervisor 统一执行周期、失败退避与取消，不在初始化时启动独立任务。
+
+槽位以稳定 instance UUID 为主键，允许账号绑定为空。代理引用现有代理库，与账号侧维护流量的代理配置分别管理。
+Admin 事务负责创建、代理配置、唯一账号绑定和启停意图，使用 generation 乐观锁并记录审计和配置 revision。
+账号删除通过外键解除绑定，触发器停止槽位并推进代次；代理库连接修改也推进关联槽位代次。
+
+`host.openai_slots.enabled` 关闭时不创建 Docker client，registry 保持为空。Provider 读取账号绑定关系，
+任何已绑定槽位在停止、全局关闭、未 Ready 或读取失败时均拒绝推理，不回退直连；未绑定账号保持现有路径。
+显式删除必须在停止意图且解绑后提交，持久化删除标记阻止后续配置变更。Host 通过 Core 端口领取删除意图，检查容器、网络和卷的归属后清理，全部成功才回执删除记录；失败逐槽保留并重试，不从孤儿状态推导删除授权。
+只有请求运行、绑定有效 OpenAI 账号且配置槽位代理的记录进入 Host 期望集合，孤儿容器停止并保留 volume。
+Provider 只接受实例及 generation 同时匹配的 Ready 路由，避免并发配置提交后使用旧出口。
+存储或 Docker 枚举失败、对账取消/中止及 worker 退出时撤销 Ready 路由。停止意图与实际停止观测分开展示，
+全局关闭不会停止遗留容器，也不能用期望状态推断实际停机。
+当前 sidecar 只支持 Responses HTTP/SSE，绑定槽位的其他推理端点在发送前拒绝；维护流量继续使用账号原路径。
 
 ## 4. 数据面请求生命周期
 
@@ -552,6 +575,7 @@ Provider metadata 的 `upstreamServiceTier`，不改写客户端收到的响应�
 
 Worker 由各 Bundle 贡献、由 Host 统一监督：
 
+- Host：独立账号槽位 Docker 资源与 Ready 路由的周期对账；
 - Store：过期请求恢复、历史保留和 PostgreSQL/Redis 观测队列；
 - Core：`runtime` owner 的 RuntimeSnapshot 周期对账和 Redis change 订阅；
 - Admin：S3/R2 备份 daemon，负责调度、执行、删除收敛与保留清理；

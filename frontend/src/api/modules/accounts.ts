@@ -660,3 +660,22 @@ export function updateAccountApiKey(data: { accountId: string, baseUrl: string, 
     data: { provider: 'openai', ...data },
   })
 }
+
+export type AccountSlotState = 'disabled' | 'global-disabled' | 'starting' | 'ready' | 'degraded'
+
+export interface AccountSlot {
+  accountId: string
+  enabled: boolean
+  generation: number | null
+  state: AccountSlotState
+  reason: string | null
+}
+
+export function queryAccountSlots(data: { accountIds: string[] }, options: RequestOptions = {}) {
+  return request<{ globalEnabled: boolean, items: AccountSlot[] }>({
+    url: '/api/admin/accounts/slots/query',
+    method: 'POST',
+    data,
+    ...options,
+  })
+}

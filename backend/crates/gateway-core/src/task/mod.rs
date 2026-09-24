@@ -24,10 +24,11 @@ pub enum WorkerKind {
     Backup,
     AccountImport,
     AccountFreezeRecovery,
+    AccountSlotReconciliation,
 }
 
 impl WorkerKind {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::OAuthRefresh,
         Self::QuotaCatalogHealth,
         Self::RuntimeSnapshotReconciliation,
@@ -38,6 +39,7 @@ impl WorkerKind {
         Self::Backup,
         Self::AccountImport,
         Self::AccountFreezeRecovery,
+        Self::AccountSlotReconciliation,
     ];
 
     #[must_use]
@@ -53,6 +55,7 @@ impl WorkerKind {
             Self::Backup => "backup",
             Self::AccountImport => "account_import",
             Self::AccountFreezeRecovery => "account_freeze_recovery",
+            Self::AccountSlotReconciliation => "account_slot_reconciliation",
         }
     }
 }
@@ -412,6 +415,7 @@ impl WorkerRegistration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WorkerDisabledReason {
     NoBufferedOpsEvents,
+    AccountSlotsDisabled,
 }
 
 impl WorkerDisabledReason {
@@ -419,6 +423,7 @@ impl WorkerDisabledReason {
     pub const fn kind(self) -> WorkerKind {
         match self {
             Self::NoBufferedOpsEvents => WorkerKind::OpsFlush,
+            Self::AccountSlotsDisabled => WorkerKind::AccountSlotReconciliation,
         }
     }
 
@@ -426,6 +431,7 @@ impl WorkerDisabledReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NoBufferedOpsEvents => "ops events have no flush buffer",
+            Self::AccountSlotsDisabled => "account slots are globally disabled",
         }
     }
 }

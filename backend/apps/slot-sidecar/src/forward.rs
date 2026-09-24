@@ -1,7 +1,5 @@
 //! 经过固定代理的受限 OpenAI 上游转发。
 
-use std::collections::BTreeMap;
-
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Response, StatusCode};
 use reqwest::Client;
@@ -10,12 +8,12 @@ use url::Url;
 
 const ALLOWED_PATHS: &[&str] = &["/backend-api/codex/responses"];
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForwardRequest {
     pub path: String,
     #[serde(default)]
-    pub headers: BTreeMap<String, String>,
+    pub headers: Vec<(String, Vec<u8>)>,
     pub body: serde_json::Value,
 }
 
@@ -25,16 +23,20 @@ pub async fn forward(
     request: ForwardRequest,
 ) -> Result<Response<Body>, ForwardError> {
     let target = upstream_url(upstream_origin, &request.path)?;
-    let mut builder = client.post(target).json(&request.body);
+    let mut builder = client.post(target);
     for (name, value) in request.headers {
         let name = HeaderName::try_from(name).map_err(|_| ForwardError::InvalidHeader)?;
         if filtered_request_header(&name) {
             continue;
         }
-        let value = HeaderValue::try_from(value).map_err(|_| ForwardError::InvalidHeader)?;
+        let value = HeaderValue::from_bytes(&value).map_err(|_| ForwardError::InvalidHeader)?;
         builder = builder.header(name, value);
     }
-    let upstream = builder.send().await.map_err(|_| ForwardError::Upstream)?;
+    let upstream = builder
+        .json(&request.body)
+        .send()
+        .await
+        .map_err(|_| ForwardError::Upstream)?;
     let status = upstream.status();
     let headers = upstream.headers().clone();
     let mut response = Response::builder().status(status);
@@ -80,7 +82,8 @@ fn copy_response_headers(source: &HeaderMap, target: &mut HeaderMap) {
         if !matches!(
             name.as_str(),
             "connection" | "content-length" | "transfer-encoding" | "upgrade"
-        ) {
+        ) && !name.as_str().starts_with("x-cpr-slot-")
+        {
             target.append(name, value.clone());
         }
     }

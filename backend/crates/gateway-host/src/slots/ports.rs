@@ -34,9 +34,20 @@ pub trait AccountSlotEngine: Send + Sync {
     ) -> Result<ConvergedAccountSlot, AccountSlotEngineError>;
 
     async fn stop(&self, instance_id: AccountSlotInstanceId) -> Result<(), AccountSlotEngineError>;
+
+    async fn delete(
+        &self,
+        instance_id: AccountSlotInstanceId,
+    ) -> Result<(), AccountSlotEngineError>;
 }
 
 #[async_trait]
 pub trait AccountSlotDesiredStateSource: Send + Sync {
+    async fn pending_deletions(&self)
+    -> Result<Vec<AccountSlotInstanceId>, AccountSlotEngineError>;
+    async fn complete_deletion(
+        &self,
+        id: AccountSlotInstanceId,
+    ) -> Result<(), AccountSlotEngineError>;
     async fn list_desired_slots(&self) -> Result<Vec<DesiredAccountSlot>, AccountSlotEngineError>;
 }

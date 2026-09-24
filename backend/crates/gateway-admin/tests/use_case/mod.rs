@@ -1,4 +1,5 @@
 mod account_groups;
+mod account_slots;
 mod accounts;
 mod auth;
 mod auth_key;

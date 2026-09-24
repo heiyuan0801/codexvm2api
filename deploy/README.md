@@ -495,3 +495,78 @@ pg_restore --no-owner --no-privileges --password \
 
 只关闭计划备份不会停止 Worker 的任务恢复和到期删除。无法确认这些记录的影响时，
 不要把恢复后的数据库直接接入运行中的应用。具体处理应根据目标库数据制定，不提供清空生产记录的通用命令。
+
+## OpenAI 独立账号槽位
+
+槽位仅适用于单网关实例的 Docker 部署，每个启用账号拥有独立 sidecar、网络和 HOME 持久卷
+OAuth 账号必须先绑定有效代理，目前支持 Responses HTTP/SSE
+API Key 账号不支持启用独立槽位，其他推理端点会拒绝执行
+全局功能默认关闭，普通 Compose 不挂载 Docker socket
+
+构建 sidecar 并应用显式扩展：
+
+```bash
+export CPR_SLOT_IMAGE=codex-slot-sidecar:local
+export CPR_IMAGE=codex-proxy-rs:slots-local
+docker compose -f deploy/compose.yaml -f deploy/compose.slots.yaml --profile slot-build build codex-proxy-rs slot-sidecar
+docker compose -f deploy/compose.yaml -f deploy/compose.slots.yaml up -d codex-proxy-rs
+```
+
+槽位扩展会把网关切换到宿主网络，并授予 `NET_ADMIN`/`NET_RAW`，以便在宿主网络命名空间
+安装每个槽位独立的 `iptables` 出网规则；因此只应在可信的单实例 Linux Docker Engine 上启用。
+该扩展会以 root 网关进程运行；`NET_ADMIN`/`NET_RAW` 对非 root 的 `cpr` UID 不会进入有效能力集，
+否则规则安装会返回 permission denied。挂载 Docker socket 与 root 网络能力等同宿主管理权限，
+必须把启用槽位的网关部署在专用、可信的单实例主机。
+基础网关镜像已内置 `iptables` 客户端。宿主机需要启用 iptables 兼容接口（包括 nftables
+兼容模式），并允许 Docker bridge 转发；Docker Desktop 的 Linux VM 不提供宿主机网络命名空间，
+只能运行基础 Compose，不能完成真实槽位出网验收。
+扩展用 `CPR_OPENAI_SLOTS_ENABLED=true` 和 `CPR_OPENAI_SLOTS_IMAGE` 覆盖配置文件
+其余限额、超时与对账周期见 `config.example.yaml` 的 `host.openai_slots`
+生产环境应将构建镜像推送到受控仓库，并把 `CPR_SLOT_IMAGE` 固定为实际镜像 digest
+Host 使用本机已有镜像，启用前需构建或拉取该镜像
+
+挂载 Docker socket 赋予网关等同宿主 root 的控制能力，包括创建和连接容器、网络与卷
+只在可信单实例宿主部署，不向 sidecar 挂载 socket，不公开 sidecar 端口
+网关通过 `HOSTNAME` 识别自身容器，修改 Docker hostname 的部署需显式设置 `gateway_container`
+
+在“容器管理”中点击“创建容器”，先保存一个不绑定账号的空槽
+接着选择代理管理中的出口、绑定已有的 OpenAI OAuth 账号，再点击“启动容器”
+没有代理或账号时，可分别进入代理管理和账号管理添加，再返回槽位完成配置
+创建空槽不会立即占用 Docker 容器，启动通常在下一轮对账执行，只有“运行中”表示 Ready
+
+停止保留账号绑定、设备身份和 HOME 卷，已绑定账号停止期间拒绝推理，不恢复直连
+更换代理或绑定账号前先请求停止；编辑代理库中的连接地址会推进代次并重建关联容器
+槽位出口独立于账号的代理配置，quota、catalog、OAuth refresh 等维护请求仍使用账号原有路径
+删除账号会自动解绑并停止其槽位，保留空槽和身份
+删除容器前先停止并在配置中解绑账号，再确认永久删除；HOME 数据会清除，账号和代理记录保留
+列表显示“删除中”或“清理失败”时记录仍在，后台自动重试；容器功能关闭时需恢复开启后清理
+清理前检查精确资源的归属，不强制移除外部网络端点或占用中的卷
+全局关闭不会连接 Docker 停止遗留容器，应先请求停止并等待确认，再关闭全局功能
+
+验证真实 sidecar 的两个独立代理出口、身份、持久卷、认证和故障隔离：
+
+```bash
+docker build -f deploy/Dockerfile.slot-sidecar -t codex-slot-sidecar:local .
+python3 deploy/tests/verify-account-slots.py
+```
+
+脚本使用 Linux Docker Engine 和 Python 3，Docker Desktop 也可运行
+测试资源带随机前缀，凭据全部为测试生成值，退出时清理本次容器、网络与卷
+该脚本验证真实 sidecar 及 Docker 隔离
+实际 Host adapter 的创建、健康检查、幂等收敛、代理代次重建和停止行为可另行验证：
+
+```bash
+docker build -f deploy/tests/Dockerfile.slot-host -t codex-slot-host-tests:local .
+python3 deploy/tests/verify-account-slot-host.py
+```
+
+Host 测试容器使用宿主网络命名空间，并要求 `NET_ADMIN`、`NET_RAW` 能力；镜像内置
+`iptables`，这样 `CommandIptables`、槽位网桥网关监听和 Docker daemon 创建的网桥处于同一
+Linux 网络命名空间。脚本另起一个普通 bridge 容器作为待挂载的 gateway endpoint，测试进程
+通过容器 IP 访问 sidecar，避免 host 网络容器无法加入 user-defined bridge 的限制。该验收只支持
+Linux Docker Engine；Docker Desktop 的 daemon 位于独立 Linux VM 时，需在该 VM 或 Linux 主机内执行，
+不能把 macOS/Windows 宿主网络当作等价环境。测试容器挂载 Docker socket，只操作随机生成的两个
+测试实例。若 socket 不可用，先启动 Docker Engine，再重新执行构建和脚本；不要把 `--privileged`
+作为生产 Compose 配置。
+普通 Rust 回归显式忽略此用例，由上述脚本独立运行
+Admin 存储测试还需按迁移说明设置 `CPR_TEST_DATABASE_URL`，未设置环境的跳过不算数据库验证通过

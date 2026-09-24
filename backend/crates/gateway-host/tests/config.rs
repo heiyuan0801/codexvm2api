@@ -146,6 +146,7 @@ fn openai_slots_are_disabled_with_bounded_defaults() {
     let config = OpenAiSlotsConfig::default();
 
     assert!(!config.enabled);
+    assert!(config.gateway_container.is_none());
     assert_eq!(config.reconcile_interval_seconds, 10);
     assert_eq!(config.start_timeout_seconds, 30);
     assert_eq!(config.memory_limit_mb, 512);
@@ -154,12 +155,20 @@ fn openai_slots_are_disabled_with_bounded_defaults() {
 
 #[test]
 fn enabled_openai_slots_require_a_docker_endpoint_and_resource_limits() {
-    for invalid in ["image", "docker_endpoint", "reconcile", "memory", "pids"] {
+    for invalid in [
+        "image",
+        "docker_endpoint",
+        "gateway_container",
+        "reconcile",
+        "memory",
+        "pids",
+    ] {
         let mut config = valid_config();
         config.openai_slots.enabled = true;
         match invalid {
             "image" => config.openai_slots.image.clear(),
             "docker_endpoint" => config.openai_slots.docker_endpoint = "tcp://docker:2375".into(),
+            "gateway_container" => config.openai_slots.gateway_container = Some("  ".into()),
             "reconcile" => config.openai_slots.reconcile_interval_seconds = 0,
             "memory" => config.openai_slots.memory_limit_mb = 0,
             "pids" => config.openai_slots.pids_limit = 0,

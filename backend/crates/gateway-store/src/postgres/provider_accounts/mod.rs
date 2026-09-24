@@ -60,6 +60,7 @@ use super::{
 
 mod admin_adapter;
 mod admin_queries;
+mod containers;
 mod core_adapter;
 mod mapping;
 mod quota_forecast;

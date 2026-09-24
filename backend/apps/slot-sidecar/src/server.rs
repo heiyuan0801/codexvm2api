@@ -48,10 +48,34 @@ pub async fn serve(config: SidecarConfig) -> Result<(), SidecarBuildError> {
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(|_| SidecarBuildError::Listen)?;
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|_| SidecarBuildError::Serve)
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|_| SidecarBuildError::Serve)?;
+    let (shutdown_started, started) = tokio::sync::oneshot::channel();
+    let shutdown = async move {
+        #[cfg(unix)]
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+        #[cfg(not(unix))]
+        let _ = tokio::signal::ctrl_c().await;
+        let _ = shutdown_started.send(());
+    };
+    let server = std::future::IntoFuture::into_future(
+        axum::serve(listener, router).with_graceful_shutdown(shutdown),
+    );
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => result.map_err(|_| SidecarBuildError::Serve),
+        _ = started => {
+            // Docker 的停止窗口为 10 秒，长连接最多排空 5 秒，随后释放连接正常退出。
+            match tokio::time::timeout(std::time::Duration::from_secs(5), &mut server).await {
+                Ok(result) => result.map_err(|_| SidecarBuildError::Serve),
+                Err(_) => Ok(()),
+            }
+        }
+    }
 }
 
 async fn ready(State(state): State<Arc<SidecarState>>, headers: HeaderMap) -> StatusCode {
@@ -89,6 +113,7 @@ fn authorized(headers: &HeaderMap, expected: &[u8]) -> bool {
 fn sanitized_error(status: StatusCode, message: impl Into<String>) -> Response<Body> {
     Response::builder()
         .status(status)
+        .header("x-cpr-slot-error", "true")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
             serde_json::json!({ "error": { "message": message.into() } }).to_string(),
@@ -110,10 +135,6 @@ async fn read_file(
         return Err(error);
     }
     Ok(value)
-}
-
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
