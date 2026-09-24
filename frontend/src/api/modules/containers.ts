@@ -9,6 +9,10 @@ export interface ContainerSlot {
   accountEnabled: boolean
   proxyId: string | null
   proxyName: string | null
+  hostname: string
+  machineId: string
+  installationId: string
+  timezone: string
   running: boolean
   generation: number
   state: string

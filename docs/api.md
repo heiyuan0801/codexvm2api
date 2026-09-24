@@ -1455,7 +1455,7 @@ Host 关闭或任务取消会记录失败终态；状态查询会收敛无执行
 | `stop` | `id`、`expectedGeneration` | 请求停止，保留绑定、身份和 HOME |
 | `delete` | `id`、`expectedGeneration` | 停止意图且未绑定账号时提交删除；后台清理 owned 容器、独立网络和 HOME 卷，全部成功后删除配置 |
 
-列表项含 `id`、`name`、`accountId`、`accountName`、`accountEnabled`、`proxyId`、`proxyName`、`running`、`generation`、`state` 和 `reason`；不返回代理凭据、设备身份、内部地址或 bearer token。`running` 为期望运行状态，不能代替实际 `state`。
+列表项含 `id`、`name`、`accountId`、`accountName`、`accountEnabled`、`proxyId`、`proxyName`、`hostname`、`machineId`、`installationId`、`timezone`、`running`、`generation`、`state` 和 `reason`；仅管理员可读取这些槽位身份字段，不返回代理凭据、内部地址或 bearer token。前端列表和详情会缩短身份标识，悬停可核对完整值。`running` 为期望运行状态，不能代替实际 `state`。
 
 状态包括 `not-created`、`stopped`、`stopping`、`starting`、`ready`、`degraded`、`global-disabled`、`unknown`、`deleting` 和 `delete-failed`。启动成功需等待 `ready`；Docker 不可用或全局关闭时不能把停止意图当作已完成停机。
 
